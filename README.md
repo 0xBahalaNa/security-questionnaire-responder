@@ -149,6 +149,7 @@ Runs the deterministic retrieval path and writes both the Markdown draft and the
 
 ```
 security-questionnaire-responder/
+├── corpus/                     # Vendored mappings.yaml pin (read-only; provenance in header)
 ├── respond.py                  # CLI entrypoint — retrieve, draft, abstain, emit
 ├── prompts/                    # Versioned LLM prompt (reviewable artifact)
 ├── samples/                    # Example questionnaire + committed sample output
