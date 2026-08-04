@@ -1,0 +1,4 @@
+# Test / property dependencies (not required to run respond.py).
+-r requirements.txt
+pytest>=8.0
+hypothesis==6.135.26
