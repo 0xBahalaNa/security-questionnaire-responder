@@ -82,7 +82,7 @@ Together they close the loop that a copy-paste answer library leaves open — re
 
 ## Sample Evidence Output
 
-> Target output shape for v1.0. Committed samples land in `samples/` when the implementation ships.
+> Illustrative — target output for v1.0. Not produced by the current CLI. Committed samples land in `samples/` when retrieval, abstention, and dual output ship.
 
 Markdown draft — one answered question and one abstention:
 
@@ -134,25 +134,78 @@ Confidence breakdown: Strong 4 | Partial 2 | Contextual 0
 ## Requirements
 
 - Python 3.11+
-- [`pyyaml`](https://pyyaml.org/wiki/PyYAMLDocumentation) — corpus and questionnaire parsing
+- [`pyyaml`](https://pyyaml.org/wiki/PyYAMLDocumentation) — corpus and questionnaire parsing (`requirements.txt`)
+- Test extras (`requirements-dev.txt`): [`hypothesis`](https://hypothesis.readthedocs.io/), [`pytest`](https://docs.pytest.org/)
 - No API key required. The LLM drafting stage is optional and flag-gated; the deterministic retrieval path runs standalone.
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
 
 ## Usage
 
 ```bash
-python respond.py --questionnaire samples/caiq_lite_excerpt.yaml --out drafts/
+python respond.py --questionnaire samples/caiq_lite_excerpt.yaml
 ```
 
-Runs the deterministic retrieval path and writes both the Markdown draft and the JSON record to `drafts/`. Add `--llm` to enable the drafting-stage enhancement (requires a configured provider); the versioned prompt used for that stage is committed in-repo so it is reviewable as an artifact.
+Loads the vendored corpus, parses the questionnaire under the documented schema below, and prints a preview (mapping rows + questions). Retrieval, abstention, and dual Markdown/JSON output (`--out`) land in later issues. Optional: `--corpus path/to/mappings.yaml` points at another **trusted** pin (not customer YAML).
+
+**Exit codes:** `0` = success; `1` = failure. Stderr prefixes: `error:` = operator-fixable input/IO problem; `internal error:` = tool defect (still exit 1, no traceback).
+
+```bash
+pip install -r requirements-dev.txt
+python -m unittest test_respond
+# or: python -m pytest test_respond.py
+```
+
+## Questionnaire schema
+
+Customer questionnaires must match this schema exactly. Anything else is rejected with a clear error — the same abstention-over-fabrication instinct applied at parse time.
+
+### YAML
+
+```yaml
+questions:
+  - id: Q1          # optional string (quote values YAML would retype)
+    text: "..."     # required string; blank text is kept and flagged
+  - id: Q2
+    text: "..."
+```
+
+Rules:
+
+- Root mapping with exact key `questions` only (no `items`, no aliases, no extra root keys)
+- Non-empty list; items are **all** bare strings or **all** mappings — not mixed
+- Mapping keys are only `id` and `text`
+- YAML merge keys (`<<`) are rejected
+- Missing `id` → synthesized `_auto_N` (N = 1-based list position) and flagged; blank `text` → flagged; duplicate ids → flagged
+
+### CSV
+
+```csv
+id,text
+CAIQ-AIS-01,Describe logical access controls.
+CAIQ-AIS-02,How do you provision new users?
+```
+
+Rules:
+
+- Headers are exactly `id` and/or `text` (`text` required). No other columns.
+- UTF-8 with optional BOM (Excel)
+- Rectangular rows; blank or duplicate headers error; row numbers are 1-indexed including the header line
+- Missing `id` → synthesized `_auto_N` where **N is the CSV line number** (header is line 1), then flagged — so `_auto_2` is the first data row. This deliberately differs from YAML list-position numbering: CSV ids point operators at the file line they must edit. These ids become the join key in the JSON audit record.
 
 ## Repository Structure
 
 ```
 security-questionnaire-responder/
-├── respond.py                  # CLI entrypoint — retrieve, draft, abstain, emit
-├── prompts/                    # Versioned LLM prompt (reviewable artifact)
-├── samples/                    # Example questionnaire + committed sample output
-├── drafts/                     # Run output (gitignored)
+├── corpus/                     # Vendored mappings.yaml pin (read-only; provenance in header)
+├── respond.py                  # CLI entrypoint — load, parse, (later) retrieve/draft/abstain
+├── test_respond.py             # Schema + property-based input-layer tests
+├── samples/                    # Example questionnaire
+├── drafts/                     # Run output (gitignored; used when dual output lands)
 ├── requirements.txt
 ├── LICENSE.txt
 └── README.md
@@ -160,7 +213,8 @@ security-questionnaire-responder/
 
 ## Design Decisions
 
-- **Abstention over fabrication.** No grounded match returns an explicit abstention, never a low-confidence guess. This is the load-bearing decision of the repo.
+- **Abstention over fabrication.** No grounded match returns an explicit abstention, never a low-confidence guess. Unparseable questionnaires are rejected the same way — not silently reshaped.
+- **Split loaders.** The corpus is a trusted citation source; the questionnaire is customer input. Separate loader classes keep the two trust models free to diverge without affecting each other.
 - **Offline-first.** The tool runs and produces meaningful output with no API key, because a reviewer cloning this repo will not have one. The LLM stage is an enhancement behind a flag, not a dependency.
 - **Confidence is inherited, never computed.** Tiers come from the corpus row. The drafting stage cannot upgrade its own confidence.
 - **Citations must resolve.** An answer references a corpus row or it does not ship as an answer.

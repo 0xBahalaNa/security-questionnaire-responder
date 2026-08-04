@@ -1,0 +1,13 @@
+questions:
+  - id: Q1
+    text: Describe how you enforce logical access controls for production systems.
+  - id: Q2
+    text: How do you provision and authorize new user accounts before credentials are issued?
+  - id: Q3
+    text: How do you enforce least privilege for administrative / privileged access?
+  - id: Q4
+    text: What authentication controls do you require for users accessing the system?
+  - id: Q5
+    text: What is your data residency commitment for EU customers?
+  - id: Q6
+    text: ""
