@@ -1,0 +1,35 @@
+# Held-out negative fixture (Decision 23 / M1r4).
+# Short (3–5 content-token) off-topic questions drawn from the corpus's own
+# generic / narration vocabulary — structurally able to fail if the security
+# gate regresses. Do not consult while tuning grounding rules.
+questions:
+  - id: HO-01
+    text: How do you define the subset selection?
+  - id: HO-02
+    text: Is the agreement binding outside?
+  - id: HO-03
+    text: What is the unique brand identity?
+  - id: HO-04
+    text: Did the ticket state the deviation?
+  - id: HO-05
+    text: What is the potential frequency?
+  - id: HO-06
+    text: What is the baseline alignment design?
+  - id: HO-07
+    text: Is a change to the task necessary?
+  - id: HO-08
+    text: Who owns the information architecture?
+  - id: HO-09
+    text: What demonstrates configuration posture?
+  - id: HO-10
+    text: How do you measure organizational strength?
+  - id: HO-11
+    text: What is the default artifact separately?
+  - id: HO-12
+    text: Who manages the analytic loop?
+  - id: HO-13
+    text: What is the investigative adequacy selection?
+  - id: HO-14
+    text: Does the document satisfy the ticket?
+  - id: HO-15
+    text: What is the intent of each layer?
