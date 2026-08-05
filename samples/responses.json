@@ -1,0 +1,96 @@
+{
+  "answered": 2,
+  "corpus": "corpus/mappings.yaml",
+  "corpus_version": "1.0",
+  "responses": [
+    {
+      "answer": "AC-3 enforces approved authorizations for logical access at the system\nand application layer. CC6.1 frames logical-access security architecture\nand enforcement mechanisms. ISO A.5.15 (access control) and A.8.3\n(information access restriction) address the same enforcement intent from\npolicy and technical restriction angles.",
+      "confidence": "Strong",
+      "criterion": "CC6.1",
+      "iso_27001_2022": [
+        "A.5.15",
+        "A.8.3"
+      ],
+      "nist_800_53": [
+        "AC-3"
+      ],
+      "owner": "",
+      "question_id": "Q1",
+      "question_text": "Describe how you enforce logical access controls for production systems.",
+      "rationale": "AC-3 enforces approved authorizations for logical access at the system\nand application layer. CC6.1 frames logical-access security architecture\nand enforcement mechanisms. ISO A.5.15 (access control) and A.8.3\n(information access restriction) address the same enforcement intent from\npolicy and technical restriction angles.",
+      "reason": "",
+      "status": "answered"
+    },
+    {
+      "answer": "AC-2 governs the full account lifecycle — approve before create, modify,\ndisable, remove, and periodic review. CC6.2 covers registration and\nauthorization of new users before credentials are issued. ISO A.5.16\n(identity management) and A.5.18 (access rights) map to provisioning\nand rights assignment during onboarding.",
+      "confidence": "Strong",
+      "criterion": "CC6.2",
+      "iso_27001_2022": [
+        "A.5.16",
+        "A.5.18"
+      ],
+      "nist_800_53": [
+        "AC-2"
+      ],
+      "owner": "",
+      "question_id": "Q2",
+      "question_text": "How do you provision and authorize new user accounts before credentials are issued?",
+      "rationale": "AC-2 governs the full account lifecycle — approve before create, modify,\ndisable, remove, and periodic review. CC6.2 covers registration and\nauthorization of new users before credentials are issued. ISO A.5.16\n(identity management) and A.5.18 (access rights) map to provisioning\nand rights assignment during onboarding.",
+      "reason": "",
+      "status": "answered"
+    },
+    {
+      "answer": null,
+      "confidence": "",
+      "criterion": "",
+      "iso_27001_2022": "",
+      "nist_800_53": "",
+      "owner": "Identity & Access Management",
+      "question_id": "Q3",
+      "question_text": "How do you enforce least privilege for administrative / privileged access?",
+      "rationale": "",
+      "reason": "top hits within MARGIN: CC6.3 (Strong, AC-6,AC-2) vs CC6.1 (Strong, AC-3)",
+      "status": "INSUFFICIENT_COVERAGE"
+    },
+    {
+      "answer": null,
+      "confidence": "",
+      "criterion": "",
+      "iso_27001_2022": "",
+      "nist_800_53": "",
+      "owner": "Identity & Access Management",
+      "question_id": "Q4",
+      "question_text": "What authentication controls do you require for users accessing the system?",
+      "rationale": "",
+      "reason": "top hits within MARGIN: CC6.6 (Strong, IA-2) vs CC6.1 (Strong, AC-3)",
+      "status": "INSUFFICIENT_COVERAGE"
+    },
+    {
+      "answer": null,
+      "confidence": "",
+      "criterion": "",
+      "iso_27001_2022": "",
+      "nist_800_53": "",
+      "owner": "Privacy / Legal",
+      "question_id": "Q5",
+      "question_text": "What is your data residency commitment for EU customers?",
+      "rationale": "",
+      "reason": "no grounded corpus match",
+      "status": "INSUFFICIENT_COVERAGE"
+    },
+    {
+      "answer": null,
+      "confidence": "",
+      "criterion": "",
+      "iso_27001_2022": "",
+      "nist_800_53": "",
+      "owner": "Security SME (unrouted)",
+      "question_id": "Q6",
+      "question_text": "",
+      "rationale": "",
+      "reason": "blank question text",
+      "status": "INSUFFICIENT_COVERAGE"
+    }
+  ],
+  "total": 6
+}

@@ -7,7 +7,7 @@
 
 Drafts grounded answers to customer security questionnaires from a version-controlled SOC 2 / ISO 27001 control corpus — and abstains, loudly, when it can't. Every drafted answer carries an inline citation to the criterion behind it and a confidence tier inherited from the corpus. Every question the corpus cannot support returns `INSUFFICIENT_COVERAGE` with a reason and a suggested owner, never a plausible guess.
 
-> **Status:** v1.0 in development. Scope is the deterministic retrieval path, the abstention path, and dual Markdown/JSON output. The LLM drafting stage is a flag-gated enhancement, not a dependency.
+> **Status:** v1.0 — deterministic retrieval, abstention, and dual Markdown/JSON output. The LLM drafting stage is not implemented in v1.0; `prompts/drafting-prompt.md` is the reviewable artifact for when it lands.
 
 ## Why This Exists
 
@@ -46,6 +46,10 @@ That boundary is stated rather than hidden. Questions outside corpus scope retur
 
 Widening coverage is a corpus problem, not a tool problem. The fix is adding well-reasoned mappings upstream in the crosswalk repo, never loosening the matcher to make the number look better.
 
+**Groundedness (documented decision):** a row must clear both `GROUNDING_THRESHOLD = 2` (raw token overlap) and `MIN_SECURITY_TOKENS = 2` (security-vocabulary overlap) in `retrieve()`, and the top hit must beat the best other-criterion runner-up by `MARGIN = 2.0` in `build_record()`. Two overlapping tokens that are not security-bearing are not enough; a near-tie between two criteria abstains so a human adjudicates. These values are demo-tuned for a mix of answers and abstentions on the sample questionnaire — not CLI-tunable.
+
+**Known limit:** deterministic token overlap will sometimes draft an answered record for ordinary non-security English that happens to share corpus vocabulary (e.g. “least privilege … privileged access” on a vending machine → CC6.3). Thresholds and margin cannot reject those without also rejecting real access-control questions, and a growing deny-list of weak tokens does not bound the problem. Treat every answered draft as reviewer-mandatory; widening precision is corpus and retrieval-design work, not a looser matcher.
+
 ## Controls Addressed
 
 The corpus pivots on SOC 2 Common Criteria and cross-references ISO 27001:2022 Annex A. NIST 800-53 Rev 5 is present in the corpus as the bridge column between them.
@@ -68,7 +72,7 @@ Partial and Contextual rows are not filtered out. They are drafted with the tier
 
 The Markdown draft is the human pass. It arrives ordered by question with the drafted answer, the cited criterion, that criterion's mapping rationale, and the confidence tier inline — so a reviewer validating a claim reads the control reasoning next to the answer instead of opening a separate crosswalk. Abstentions appear in the same document with their reason and suggested owner, which makes the reviewer's queue explicit rather than something to be reconstructed from what's missing.
 
-The JSON record is the audit trail. Each entry captures question, answer, cited controls, confidence tier, and abstention reason where applicable. That structure is what makes a completed questionnaire reviewable after the fact: an auditor or a customer's security team can trace any answer back to the criterion it was grounded in, and the organization can diff this quarter's responses against last quarter's to see where control claims changed.
+The JSON record is the audit trail. Each entry captures question, answer (verbatim corpus rationale on answered rows; `null` on abstentions), cited controls (SOC 2 criterion plus ISO 27001:2022 and NIST 800-53 bridge IDs), confidence tier, and abstention reason where applicable. That structure is what makes a completed questionnaire reviewable after the fact: an auditor or a customer's security team can trace any answer back to the criterion it was grounded in, and the organization can diff this quarter's responses against last quarter's to see where control claims changed.
 
 Together they close the loop that a copy-paste answer library leaves open — retrieve, cite, tier, review, retain.
 
@@ -82,53 +86,70 @@ Together they close the loop that a copy-paste answer library leaves open — re
 
 ## Sample Evidence Output
 
-> Illustrative — target output for v1.0. Not produced by the current CLI. Committed samples land in `samples/` when retrieval, abstention, and dual output ship.
+Committed under `samples/responses.md` and `samples/responses.json` — regenerated from
+`python respond.py --questionnaire samples/caiq_lite_excerpt.yaml` (same bytes as a fresh
+`drafts/` run). Live output also lands in gitignored `drafts/`. Real run: **2/6 (33%)**.
 
 Markdown draft — one answered question and one abstention:
 
 ```markdown
-### Q4. Describe how you enforce least privilege for administrative access.
+### Q1
 
-**Answer (confidence: Strong)**
-Access is granted on a role basis and limited to what each role requires for its
-assigned tasks. Role changes trigger modification or removal of the corresponding
-access rights.
+Describe how you enforce logical access controls for production systems.
 
-**Grounded in:** SOC 2 CC6.3 → ISO 27001:2022 A.8.2, A.8.3
-**Rationale:** CC6.3 covers role-based access, modification, and removal including
-least privilege and segregation of duties. ISO A.8.2 (privileged access rights) and
-A.8.3 (information access restriction) align with privilege minimization.
+**Status:** answered
+
+**Criterion:** SOC 2 CC6.1
+
+**Cross-references:** ISO 27001:2022 A.5.15, A.8.3; NIST 800-53 AC-3
+
+**Confidence:** Strong
+
+**Rationale:** AC-3 enforces approved authorizations for logical access at the system
+and application layer. CC6.1 frames logical-access security architecture
+and enforcement mechanisms. ISO A.5.15 (access control) and A.8.3
+(information access restriction) address the same enforcement intent from
+policy and technical restriction angles.
+
+**Source:** corpus/mappings.yaml version 1.0
 
 ---
 
-### Q5. What is your data residency commitment for EU customers?
+### Q5
 
-**INSUFFICIENT_COVERAGE**
-**Reason:** No corpus criterion addresses data residency or geographic processing
-restrictions. Corpus scope is SOC 2 CC6-CC8 (access, monitoring, change management).
-**Suggested owner:** Legal / Privacy
+What is your data residency commitment for EU customers?
+
+**Status:** INSUFFICIENT_COVERAGE
+
+**Reason:** no grounded corpus match
+
+**Suggested owner:** Privacy / Legal
 ```
 
-JSON audit record:
+JSON audit record (abstention entry):
 
 ```json
 {
-  "question_id": "Q5",
-  "question": "What is your data residency commitment for EU customers?",
-  "status": "INSUFFICIENT_COVERAGE",
   "answer": null,
-  "cited_controls": [],
-  "confidence": null,
-  "abstention_reason": "No corpus criterion addresses data residency or geographic processing restrictions.",
-  "suggested_owner": "Legal / Privacy"
+  "confidence": "",
+  "criterion": "",
+  "iso_27001_2022": "",
+  "nist_800_53": "",
+  "owner": "Privacy / Legal",
+  "question_id": "Q5",
+  "question_text": "What is your data residency commitment for EU customers?",
+  "rationale": "",
+  "reason": "no grounded corpus match",
+  "status": "INSUFFICIENT_COVERAGE"
 }
 ```
 
 Run summary:
 
 ```
-Coverage: 6 answered / 4 abstained / 10 total  (60.0%)
-Confidence breakdown: Strong 4 | Partial 2 | Contextual 0
+coverage: 2/6 (33%)
+answered: 2 | abstained: 4 | total: 6
+tiers: Strong 2 | Partial 0 | Contextual 0
 ```
 
 ## Requirements
@@ -136,7 +157,7 @@ Confidence breakdown: Strong 4 | Partial 2 | Contextual 0
 - Python 3.11+
 - [`pyyaml`](https://pyyaml.org/wiki/PyYAMLDocumentation) — corpus and questionnaire parsing (`requirements.txt`)
 - Test extras (`requirements-dev.txt`): [`hypothesis`](https://hypothesis.readthedocs.io/), [`pytest`](https://docs.pytest.org/)
-- No API key required. The LLM drafting stage is optional and flag-gated; the deterministic retrieval path runs standalone.
+- No API key required. The LLM drafting stage is not implemented in v1.0 (`prompts/drafting-prompt.md` holds the versioned prompt); the deterministic retrieval path runs standalone.
 
 ```bash
 python3 -m venv .venv
@@ -150,9 +171,9 @@ pip install -r requirements.txt
 python respond.py --questionnaire samples/caiq_lite_excerpt.yaml
 ```
 
-Loads the vendored corpus, parses the questionnaire under the documented schema below, and prints a preview (mapping rows + questions). Retrieval, abstention, and dual Markdown/JSON output (`--out`) land in later issues. Optional: `--corpus path/to/mappings.yaml` points at another **trusted** pin (not customer YAML).
+Loads the vendored corpus, drafts a grounded answer (or abstains) per question, writes `drafts/responses.md` and `drafts/responses.json`, and prints a coverage line. Optional: `--corpus path/to/mappings.yaml` points at another **trusted** pin (not customer YAML); `--out-dir DIR` changes the output directory (default: `drafts/`).
 
-**Exit codes:** `0` = success; `1` = failure. Stderr prefixes: `error:` = operator-fixable input/IO problem; `internal error:` = tool defect (still exit 1, no traceback).
+**Exit codes:** `0` = success (including a 0% coverage run); `1` = failure. Stderr prefixes: `error:` = operator-fixable input/IO problem; `internal error:` = tool defect (still exit 1, no traceback).
 
 ```bash
 pip install -r requirements-dev.txt
@@ -202,10 +223,11 @@ Rules:
 ```
 security-questionnaire-responder/
 ├── corpus/                     # Vendored mappings.yaml pin (read-only; provenance in header)
-├── respond.py                  # CLI entrypoint — load, parse, (later) retrieve/draft/abstain
+├── respond.py                  # CLI — retrieve, draft/abstain, dual Markdown/JSON output
 ├── test_respond.py             # Schema + property-based input-layer tests
-├── samples/                    # Example questionnaire
-├── drafts/                     # Run output (gitignored; used when dual output lands)
+├── samples/                    # Example questionnaire + committed CLI sample output
+├── prompts/                    # Versioned optional-LLM drafting prompt (not invoked in v1.0)
+├── drafts/                     # Run output (gitignored; regenerated each CLI run)
 ├── requirements.txt
 ├── LICENSE.txt
 └── README.md
@@ -215,7 +237,7 @@ security-questionnaire-responder/
 
 - **Abstention over fabrication.** No grounded match returns an explicit abstention, never a low-confidence guess. Unparseable questionnaires are rejected the same way — not silently reshaped.
 - **Split loaders.** The corpus is a trusted citation source; the questionnaire is customer input. Separate loader classes keep the two trust models free to diverge without affecting each other.
-- **Offline-first.** The tool runs and produces meaningful output with no API key, because a reviewer cloning this repo will not have one. The LLM stage is an enhancement behind a flag, not a dependency.
+- **Offline-first.** The tool runs and produces meaningful output with no API key, because a reviewer cloning this repo will not have one. The LLM drafting stage is not implemented in v1.0; the versioned prompt under `prompts/` is the reviewable artifact, not a live dependency.
 - **Confidence is inherited, never computed.** Tiers come from the corpus row. The drafting stage cannot upgrade its own confidence.
 - **Citations must resolve.** An answer references a corpus row or it does not ship as an answer.
 - **The corpus is read-only here.** Widening coverage happens upstream in the crosswalk repo, where mappings get written reasoning and a confidence label.
