@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import io
 import json
 import os
@@ -1484,16 +1485,33 @@ def parse_questionnaire(path: InputPath | Path | str) -> Questionnaire:
 
     for question in questions:
         for issue in question.issues:
-            print(
-                f"warning: {source}: {question.display_id}: {issue}",
-                file=sys.stderr,
-            )
+            # _emit_stderr, not print: a dead stderr pipe (2>&1 | head) would
+            # raise BrokenPipeError here, inside main()'s try, and land on the
+            # return-0 backstop — exit 0 on a run that never wrote its drafts.
+            _emit_stderr(f"warning: {source}: {question.display_id}: {issue}")
 
     return Questionnaire(questions=questions, path=ip)
 
 
+class _SanitizingParser(argparse.ArgumentParser):
+    def _print_message(self, message: str, file=None) -> None:
+        if not message:
+            return
+        if file is None:
+            file = sys.stderr
+        file.write("\n".join(_safe_display_text(line) for line in message.split("\n")))
+
+    def error(self, message: str) -> None:
+        try:
+            self.print_usage(sys.stderr)
+            print(f"{self.prog}: error: {_safe_display_text(message)}", file=sys.stderr)
+        except (BrokenPipeError, OSError):
+            pass
+        raise SystemExit(2)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _SanitizingParser(
         description=(
             "Draft grounded questionnaire answers from the SOC 2 / ISO 27001 "
             "control corpus, or abstain with INSUFFICIENT_COVERAGE."
@@ -1523,6 +1541,42 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _silence_stream(stream) -> None:
+    if stream is None:
+        return
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), stream.fileno())
+    except (OSError, ValueError, AttributeError):
+        return
+
+
+def _silence_stdio() -> None:
+    """dup2 only streams whose flush failed, so a good write is not discarded."""
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.flush()
+        except (BrokenPipeError, OSError):
+            _silence_stream(stream)
+
+
+def _emit_stdout(message: str) -> None:
+    if sys.stdout is None:
+        return
+    try:
+        print(message)
+    except BrokenPipeError:
+        _silence_stream(sys.stdout)
+
+
+def _emit_stderr(message: str) -> None:
+    try:
+        print(message, file=sys.stderr)
+    except (BrokenPipeError, OSError):
+        return
+
+
 def _configure_stdio() -> None:
     """One print-boundary seam: ASCII terminals escape; UTF-8 shows real glyphs.
 
@@ -1547,11 +1601,11 @@ def main(argv: list[str] | None = None) -> int:
         corpus = load_corpus(args.corpus)
         questionnaire = parse_questionnaire(args.questionnaire)
 
-        print(f"corpus: {corpus.path.display}")
-        print(f"corpus version: {corpus.version}")
-        print(f"mapping rows: {len(corpus.mappings)}")
-        print(f"questionnaire: {questionnaire.path.display}")
-        print(f"questions: {len(questionnaire.questions)}")
+        _emit_stdout(f"corpus: {corpus.path.display}")
+        _emit_stdout(f"corpus version: {corpus.version}")
+        _emit_stdout(f"mapping rows: {len(corpus.mappings)}")
+        _emit_stdout(f"questionnaire: {questionnaire.path.display}")
+        _emit_stdout(f"questions: {len(questionnaire.questions)}")
 
         records: list[dict] = []
         answered = 0
@@ -1559,7 +1613,7 @@ def main(argv: list[str] | None = None) -> int:
             preview = (
                 _safe_display_text(question.text) if question.text else "(blank)"
             )
-            print(f"  {question.display_id}: {preview}")
+            _emit_stdout(f"  {question.display_id}: {preview}")
             record = build_record(question, corpus)
             records.append(record)
             if record["status"] == "answered":
@@ -1573,16 +1627,16 @@ def main(argv: list[str] | None = None) -> int:
             md_path.write_text(render_markdown(records, corpus), encoding="utf-8")
             json_path.write_text(render_json(records, corpus), encoding="utf-8")
         except OSError as exc:
+            # Do not re-raise OSError(EPIPE): CPython makes that BrokenPipeError
+            # and the old handler returned 0 with no drafts.
             detail = exc.strerror or type(exc).__name__
-            raise OSError(
-                exc.errno, f"cannot write {out_ip.display}: {detail}"
-            ) from None
+            raise ValueError(f"cannot write {out_ip.display}: {detail}") from None
 
         total = len(records)
         pct = _coverage_pct(answered, total)
         abstained = total - answered
-        print(f"coverage: {answered}/{total} ({pct}%)")
-        print(f"answered: {answered} | abstained: {abstained} | total: {total}")
+        _emit_stdout(f"coverage: {answered}/{total} ({pct}%)")
+        _emit_stdout(f"answered: {answered} | abstained: {abstained} | total: {total}")
         tier_order = ("Strong", "Partial", "Contextual")
         tier_counts = {tier: 0 for tier in tier_order}
         for record in records:
@@ -1591,7 +1645,7 @@ def main(argv: list[str] | None = None) -> int:
             conf = record["confidence"]
             if conf in tier_counts:
                 tier_counts[conf] += 1
-        print(
+        _emit_stdout(
             "tiers: "
             + " | ".join(f"{tier} {tier_counts[tier]}" for tier in tier_order)
         )
@@ -1600,32 +1654,60 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             qid = _safe_display_text(record["question_id"])
             reason = _safe_display_text(record["reason"])
-            print(f"  abstain {qid}: {reason}")
+            _emit_stdout(f"  abstain {qid}: {reason}")
         for name in ("responses.md", "responses.json"):
             shown = f"{out_ip.display.rstrip('/')}/{name}"
-            print(f"wrote: {_safe_display_text(shown)}")
+            _emit_stdout(f"wrote: {_safe_display_text(shown)}")
 
+        if sys.stdout is not None:
+            try:
+                sys.stdout.flush()
+            except BrokenPipeError:
+                _silence_stream(sys.stdout)
+            except OSError as exc:
+                raise OSError(
+                    exc.errno,
+                    f"cannot write to stdout: {exc.strerror or type(exc).__name__}",
+                ) from None
         return 0
+    except BrokenPipeError:
+        # Backstop: stdout already silenced; drafts should already be written.
+        return 0
+    except KeyboardInterrupt:
+        # BaseException, not Exception — the catch-all never sees Ctrl-C.
+        _emit_stderr("error: interrupted")
+        return 1
     except RecursionError:
         # Deep customer YAML nests blow the parser — fault is the file, not the tool.
-        print(
+        _emit_stderr(
             "error: input nesting exceeds parser limits; "
-            "simplify the questionnaire or corpus file",
-            file=sys.stderr,
+            "simplify the questionnaire or corpus file"
         )
         return 1
     except (OSError, ValueError, yaml.YAMLError, csv.Error) as exc:
         # Operator-fixable input / IO / encoding problems (incl. UnicodeEncodeError).
-        print(f"error: {_format_cli_error(exc)}", file=sys.stderr)
+        if (
+            getattr(exc, "errno", None) == errno.ENOSPC
+            and "cannot write" not in str(exc)
+        ):
+            exc = OSError(
+                exc.errno,
+                f"cannot write to stdout: {exc.strerror or type(exc).__name__}",
+            )
+        _emit_stderr(f"error: {_format_cli_error(exc)}")
         return 1
     except Exception as exc:  # noqa: BLE001 — catch-all; distinct prefix
         # Tool defect — type name kept, exit 1, never a traceback.
-        print(
-            f"internal error: {_format_cli_error(exc, include_type=True)}",
-            file=sys.stderr,
+        _emit_stderr(
+            f"internal error: {_format_cli_error(exc, include_type=True)}"
         )
         return 1
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    try:
+        raise SystemExit(main())
+    except BrokenPipeError:
+        raise SystemExit(0)
+    finally:
+        _silence_stdio()

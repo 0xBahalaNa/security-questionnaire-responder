@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -654,6 +655,14 @@ REQUIRED_COUNTERPART_FAMILIES: tuple[frozenset[str], ...] = (
 def _write(path: Path, text: str) -> Path:
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _write_large_questionnaire(
+    path: Path, n: int = 3000, text: str = "x"
+) -> Path:
+    parts = ["questions:\n"]
+    parts.extend(f"  - id: Q{i}\n    text: {text}\n" for i in range(n))
+    return _write(path, "".join(parts))
 
 
 def _sample_questions() -> dict[str, Question]:
@@ -2548,6 +2557,356 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
         self.assertEqual(code, 1)
         self.assertIn("internal error: AttributeError:", text)
         self.assertNotIn("Traceback", text)
+
+
+class ExitCodeContractTests(unittest.TestCase):
+    """Issue #7: main() exits only 0, 1, or 2."""
+
+    def test_missing_questionnaire_exits_2(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "respond.py")],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(b"usage:", result.stderr)
+        self.assertIn(b"\n", result.stderr)
+        self.assertNotIn(b"\\x0a", result.stderr)
+
+    def test_unknown_flag_esc_byte_not_on_stderr(self) -> None:
+        evil = "--" + chr(27) + "[31mEVIL"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(REPO_ROOT / "respond.py"),
+                "--questionnaire",
+                str(SAMPLE),
+                evil,
+            ],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertNotIn(bytes([27]), result.stderr)
+        self.assertIn(b"unrecognized arguments", result.stderr)
+
+    def test_broken_pipe_to_head_exits_0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            qfile = tmp_path / "many.yaml"
+            # Long lines so n=400 overflows the ~64KiB pipe before the loop ends.
+            _write_large_questionnaire(qfile, n=400, text="x" * 200)
+            out_dir = tmp_path / "out"
+            err_file = tmp_path / "stderr.txt"
+            out_file = tmp_path / "stdout.txt"
+            code_file = tmp_path / "code.txt"
+            script = (
+                "set +o pipefail\n"
+                '"$1" "$2" --questionnaire "$3" --out-dir "$4" 2>"$5"'
+                ' | head -3 >"$6"\n'
+                'printf "%s\\n" "${PIPESTATUS[0]}" >"$7"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(qfile),
+                    str(out_dir),
+                    str(err_file),
+                    str(out_file),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=60,
+            )
+            code = int(code_file.read_text().strip())
+            stdout = out_file.read_bytes()
+            stderr = err_file.read_bytes()
+            self.assertEqual(code, 0, msg=stderr.decode("utf-8", "replace"))
+            self.assertEqual(stdout.count(b"\n"), 3)
+            self.assertEqual(stderr, b"")
+            self.assertNotIn(b"Exception ignored", stderr)
+            self.assertTrue((out_dir / "responses.md").is_file())
+            self.assertTrue((out_dir / "responses.json").is_file())
+
+    def test_dev_full_exits_1(self) -> None:
+        """Small questionnaire: only the final flush hits /dev/full."""
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full is not available on this host")
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            with open("/dev/full", "wb") as full:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "respond.py"),
+                        "--questionnaire",
+                        str(SAMPLE),
+                        "--out-dir",
+                        str(out_dir),
+                    ],
+                    cwd=str(REPO_ROOT),
+                    stdout=full,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=60,
+                )
+        self.assertEqual(result.returncode, 1)
+        err = result.stderr.decode("utf-8", "replace")
+        self.assertTrue(
+            any(line.startswith("error:") for line in err.splitlines()),
+            msg=err,
+        )
+        self.assertIn("cannot write to stdout", err)
+        self.assertNotIn("Traceback", err)
+        self.assertNotIn("Exception ignored", err)
+
+    def test_dev_full_large_run_exits_1(self) -> None:
+        """Mid-loop implicit flush on a large run still names stdout."""
+        if not os.path.exists("/dev/full"):
+            self.skipTest("/dev/full is not available on this host")
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            qfile = tmp_path / "many.yaml"
+            _write_large_questionnaire(qfile)
+            out_dir = tmp_path / "out"
+            with open("/dev/full", "wb") as full:
+                result = subprocess.run(
+                    [
+                        sys.executable,
+                        str(REPO_ROOT / "respond.py"),
+                        "--questionnaire",
+                        str(qfile),
+                        "--out-dir",
+                        str(out_dir),
+                    ],
+                    cwd=str(REPO_ROOT),
+                    stdout=full,
+                    stderr=subprocess.PIPE,
+                    check=False,
+                    timeout=60,
+                )
+        self.assertEqual(result.returncode, 1)
+        err = result.stderr.decode("utf-8", "replace")
+        self.assertIn("cannot write to stdout", err)
+        self.assertNotIn("Exception ignored", err)
+
+    def test_warning_to_closed_stderr_pipe_still_writes_drafts(self) -> None:
+        """A dead stderr pipe must not abort the run: exit 0 has to mean drafts exist.
+
+        SAMPLE emits one warning (Q6 blank text). Before the fix that warning
+        went through a raw print(file=sys.stderr) inside main()'s try, so the
+        BrokenPipeError landed on the return-0 backstop and the run exited 0
+        having written nothing.
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            code_file = tmp_path / "code.txt"
+            script = (
+                "set +o pipefail\n"
+                '"$1" "$2" --questionnaire "$3" --out-dir "$4" 2>&1 >/dev/null'
+                ' | head -0 >/dev/null\n'
+                'printf "%s\\n" "${PIPESTATUS[0]}" >"$5"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(SAMPLE),
+                    str(out_dir),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=60,
+            )
+            self.assertEqual(int(code_file.read_text().strip()), 0)
+            self.assertTrue((out_dir / "responses.md").is_file())
+            self.assertTrue((out_dir / "responses.json").is_file())
+
+    def test_merged_stderr_into_closed_pipe_exits_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            err_file = tmp_path / "merged.txt"
+            code_file = tmp_path / "code.txt"
+            script = (
+                "set +o pipefail\n"
+                '"$1" "$2" --questionnaire /nope.yaml 2>&1 | head -0 >"$3"\n'
+                'printf "%s\\n" "${PIPESTATUS[0]}" >"$4"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(err_file),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=30,
+            )
+            code = int(code_file.read_text().strip())
+            self.assertEqual(code, 1)
+            self.assertNotIn(b"Exception ignored", err_file.read_bytes())
+
+    def test_help_to_closed_pipe_exits_0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            err_file = tmp_path / "stderr.txt"
+            code_file = tmp_path / "code.txt"
+            script = (
+                "set +o pipefail\n"
+                '"$1" "$2" --help 2>"$3" | true\n'
+                'printf "%s\\n" "${PIPESTATUS[0]}" >"$4"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(err_file),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=30,
+            )
+            code = int(code_file.read_text().strip())
+            stderr = err_file.read_bytes()
+            self.assertEqual(code, 0, msg=stderr.decode("utf-8", "replace"))
+            self.assertNotIn(b"Exception ignored", stderr)
+            self.assertNotIn(b"Traceback", stderr)
+
+    def test_help_prints_usage_to_stdout(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "respond.py"), "--help"],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertIn(b"usage:", result.stdout)
+        self.assertIn(b"\n", result.stdout)
+        self.assertGreater(len(result.stdout), 100)
+        self.assertNotIn(b"\\x0a", result.stdout)
+
+    def test_closed_stdout_fd_successful_run_exits_0(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            err_file = tmp_path / "err.txt"
+            code_file = tmp_path / "code.txt"
+            script = (
+                '"$1" "$2" --questionnaire "$3" --out-dir "$4" >&- 2>"$5"\n'
+                'printf "%s\\n" "$?" >"$6"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(SAMPLE),
+                    str(out_dir),
+                    str(err_file),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=30,
+            )
+            code = int(code_file.read_text().strip())
+            err = err_file.read_text(encoding="utf-8", errors="replace")
+            self.assertEqual(code, 0, msg=err)
+            self.assertNotIn("internal error", err)
+            self.assertTrue((out_dir / "responses.md").is_file())
+            self.assertTrue((out_dir / "responses.json").is_file())
+
+    def test_keyboard_interrupt_in_process_exits_1(self) -> None:
+        err = io.StringIO()
+        old_err = sys.stderr
+        with mock.patch(
+            "respond.parse_questionnaire", side_effect=KeyboardInterrupt
+        ):
+            try:
+                sys.stderr = err
+                code = main(["--questionnaire", str(SAMPLE)])
+            finally:
+                sys.stderr = old_err
+        text = err.getvalue()
+        self.assertEqual(code, 1)
+        self.assertIn("error: interrupted", text)
+        self.assertNotIn("Traceback", text)
+        self.assertNotIn("/home/", text)
+
+    def test_sigint_mid_run_exits_1(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            qfile = tmp_path / "many.yaml"
+            _write_large_questionnaire(qfile)
+            out_dir = tmp_path / "out"
+            env = {**os.environ, "PYTHONUNBUFFERED": "1"}
+            proc = subprocess.Popen(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    "--questionnaire",
+                    str(qfile),
+                    "--out-dir",
+                    str(out_dir),
+                ],
+                cwd=str(REPO_ROOT),
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                line = proc.stdout.readline() if proc.stdout else b""
+                if not line:
+                    proc.kill()
+                    self.fail("no stdout before SIGINT")
+                proc.send_signal(signal.SIGINT)
+                _stdout, stderr = proc.communicate(timeout=15)
+            except Exception:
+                proc.kill()
+                raise
+            err = stderr.decode("utf-8", "replace")
+            self.assertEqual(proc.returncode, 1, msg=err)
+            self.assertIn("error: interrupted", err)
+            self.assertNotIn("Traceback", err)
+            self.assertNotIn("/home/", err)
+
+    def test_readme_exit_codes_are_exactly_0_1_2(self) -> None:
+        text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        section = text.split("## Usage", 1)[1].split(
+            "## Questionnaire schema", 1
+        )[0]
+        self.assertIn("`0`", section)
+        self.assertIn("`1`", section)
+        self.assertIn("`2`", section)
+        self.assertNotIn("`120`", section)
+        self.assertNotIn("`130`", section)
 
 
 # ---------------------------------------------------------------------------
