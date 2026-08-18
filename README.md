@@ -171,7 +171,13 @@ python respond.py --questionnaire samples/caiq_lite_excerpt.yaml
 
 Loads the vendored corpus, drafts a grounded answer (or abstains) per question, writes `drafts/responses.md` and `drafts/responses.json`, and prints a coverage line. Optional: `--corpus path/to/mappings.yaml` points at another **trusted** pin (not customer YAML); `--out-dir DIR` changes the output directory (default: `drafts/`).
 
-**Exit codes:** `0` = success (including a 0% coverage run); `1` = failure. Stderr prefixes: `error:` = operator-fixable input/IO problem; `internal error:` = tool defect (still exit 1, no traceback).
+**Exit codes**
+
+| Code | Meaning | Reached by |
+|---|---|---|
+| `0` | The run completed. Includes a 0% coverage run. A broken pipe (`\| head`) is a normal exit. | Finished run; reader closed the pipe |
+| `1` | The run did not complete. Stderr carries an `error: <what>` line (operator-fixable) or `internal error: <Type>: <what>` (tool defect). Parse warnings can precede it. Ctrl-C is this case. | Bad input or IO; interrupt; tool defect |
+| `2` | The command line was wrong. Stderr is argparse usage plus one sanitized `error:` line. | argparse |
 
 ```bash
 pip install -r requirements-dev.txt
