@@ -27,6 +27,7 @@ from respond import (
     TERM_EQUIVALENCE,
     Question,
     _UNSAFE_UNICODE_CATEGORIES,
+    _abstain_record,
     _format_cli_error,
     _safe_display_text,
     _validate_mapping_row,
@@ -2986,6 +2987,19 @@ class PropertyTests(unittest.TestCase):
     def test_invalid_schema_never_returns_questions(self, data: object) -> None:
         with self.assertRaises(ValueError):
             check_questionnaire_schema(data, source="property.yaml")
+
+
+class AbstainRecordTests(unittest.TestCase):
+    def test_abstain_record_iso_and_nist_are_empty_lists(self) -> None:
+        question = Question(
+            id="Q5",
+            text="What is your data residency commitment for EU customers?",
+        )
+        record = _abstain_record(question, "no grounded corpus match")
+        self.assertEqual(record["iso_27001_2022"], [])
+        self.assertIsInstance(record["iso_27001_2022"], list)
+        self.assertEqual(record["nist_800_53"], [])
+        self.assertIsInstance(record["nist_800_53"], list)
 
 
 if __name__ == "__main__":

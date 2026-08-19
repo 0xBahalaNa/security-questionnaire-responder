@@ -987,8 +987,8 @@ def _abstain_record(question: Question, reason: str) -> dict:
         "criterion": "",
         "confidence": "",
         "rationale": "",
-        "iso_27001_2022": "",
-        "nist_800_53": "",
+        "iso_27001_2022": [],
+        "nist_800_53": [],
         "owner": suggest_owner(question),
         "reason": reason,
     }
