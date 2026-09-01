@@ -17,6 +17,12 @@ This drafts from a version-controlled crosswalk instead. Each answer cites the c
 
 That last part is the design center. In an assurance context, a fabricated-but-plausible SOC 2 answer is worse than no answer: it puts an unsupported claim in front of a customer and nobody downstream can tell it apart from a grounded one. Abstention is not the tool failing. It is the tool routing work to a human with a stated reason.
 
+## Impact
+
+The manual alternative is the copy-paste answer library: answers written once, reused for quarters, with no link back to the control they claim and no signal when that control has since changed. The reviewer's real job (which claims still hold?) has no handle to grab.
+
+Here every drafted answer resolves to a corpus row with an inline citation and an inherited confidence tier, so review means checking a claim against its named criterion instead of re-deriving it. Unanswerable questions become an explicit routed queue with reasons and owners rather than blanks to notice. The coverage number stays honest by design: the sample run reports 2/6 (33%), because anything the tool cannot ground becomes an abstention, whether the question falls outside the 7-criteria corpus, lands in a near-tie between criteria that a human should adjudicate, or arrives malformed.
+
 ## How It Works
 
 ```mermaid
