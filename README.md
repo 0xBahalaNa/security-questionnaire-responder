@@ -5,7 +5,12 @@
 
 # Security Questionnaire Responder
 
-I draft grounded answers to customer security questionnaires from a version-controlled SOC 2 / ISO 27001 control corpus, and I abstain loudly when I can't. Every drafted answer carries an inline citation to the criterion behind it and a confidence tier inherited from the corpus. Every question the corpus cannot support returns `INSUFFICIENT_COVERAGE` with a reason and a suggested owner. No plausible guesses.
+**Security questionnaires sit between a signed deal and revenue, and the usual copy-paste answer library puts claims in front of customers that stopped being true quarters ago. A confident wrong answer costs more than a slow one.** This tool drafts answers from a version-controlled control corpus and abstains loudly when the corpus cannot support the question.
+
+- Every drafted answer carries an inline citation to the SOC 2 / ISO 27001 criterion behind it and a confidence tier inherited from the corpus
+- Every unsupported question returns `INSUFFICIENT_COVERAGE` with a reason and a suggested owner; no plausible guesses
+- Corpus is the [SOC 2 / ISO 27001 / NIST crosswalk](https://github.com/0xBahalaNa/soc2-iso-27001-nist-800-53-rev-5-crosswalk); Markdown and JSON output
+- Python, deterministic retrieval in v1.0
 
 > **Status:** v1.0. Deterministic retrieval, abstention, and dual Markdown/JSON output. The LLM drafting stage is not implemented in v1.0; `prompts/drafting-prompt.md` is the reviewable artifact for when it lands.
 
