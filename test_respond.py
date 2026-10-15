@@ -2844,6 +2844,66 @@ class ExitCodeContractTests(unittest.TestCase):
             self.assertTrue((out_dir / "responses.md").is_file())
             self.assertTrue((out_dir / "responses.json").is_file())
 
+    def test_closed_stderr_fd_keeps_stdout_clean(self) -> None:
+        """A caller that closed fd 2 is parsing stdout. Diagnostics stay off it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            out_dir = tmp_path / "out"
+            happy_file = tmp_path / "happy.txt"
+            fail_file = tmp_path / "fail.txt"
+            usage_file = tmp_path / "usage.txt"
+            code_file = tmp_path / "codes.txt"
+            script = (
+                '"$1" "$2" --questionnaire "$3" --out-dir "$4" 2>&- >"$5"\n'
+                'printf "happy %s\\n" "$?" >>"$8"\n'
+                '"$1" "$2" --questionnaire /nope.yaml 2>&- >"$6"\n'
+                'printf "fail %s\\n" "$?" >>"$8"\n'
+                '"$1" "$2" 2>&- >"$7"\n'
+                'printf "usage %s\\n" "$?" >>"$8"\n'
+            )
+            subprocess.run(
+                [
+                    "bash",
+                    "-c",
+                    script,
+                    "_",
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    str(SAMPLE),
+                    str(out_dir),
+                    str(happy_file),
+                    str(fail_file),
+                    str(usage_file),
+                    str(code_file),
+                ],
+                cwd=str(REPO_ROOT),
+                check=True,
+                timeout=60,
+            )
+            codes = {
+                key: int(value)
+                for key, value in (
+                    line.split() for line in code_file.read_text().splitlines()
+                )
+            }
+            happy = happy_file.read_text(encoding="utf-8")
+            fail = fail_file.read_text(encoding="utf-8")
+            usage = usage_file.read_text(encoding="utf-8")
+
+            self.assertEqual(codes["happy"], 0, msg=happy)
+            self.assertIn("corpus: corpus/mappings.yaml", happy)
+            self.assertNotIn("warning:", happy)
+            self.assertNotIn("error:", happy)
+            self.assertTrue((out_dir / "responses.md").is_file())
+            self.assertTrue((out_dir / "responses.json").is_file())
+
+            self.assertEqual(codes["fail"], 1, msg=fail)
+            self.assertEqual(fail, "")
+
+            self.assertEqual(codes["usage"], 2, msg=usage)
+            self.assertNotIn("usage:", usage)
+            self.assertEqual(usage, "")
+
     def test_keyboard_interrupt_in_process_exits_1(self) -> None:
         err = io.StringIO()
         old_err = sys.stderr
