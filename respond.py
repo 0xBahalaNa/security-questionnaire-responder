@@ -1503,8 +1503,10 @@ class _SanitizingParser(argparse.ArgumentParser):
 
     def error(self, message: str) -> None:
         try:
-            self.print_usage(sys.stderr)
-            print(f"{self.prog}: error: {_safe_display_text(message)}", file=sys.stderr)
+            # print_usage(None) and print(file=None) both write to stdout.
+            if sys.stderr is not None:
+                self.print_usage(sys.stderr)
+                print(f"{self.prog}: error: {_safe_display_text(message)}", file=sys.stderr)
         except (BrokenPipeError, OSError):
             pass
         raise SystemExit(2)
@@ -1571,6 +1573,8 @@ def _emit_stdout(message: str) -> None:
 
 
 def _emit_stderr(message: str) -> None:
+    if sys.stderr is None:
+        return
     try:
         print(message, file=sys.stderr)
     except (BrokenPipeError, OSError):
