@@ -196,6 +196,8 @@ python -m unittest test_respond
 # or: python -m pytest test_respond.py
 ```
 
+CI runs `python -m pytest test_respond.py` on each pull request and on each push to `main`.
+
 ## Questionnaire schema
 
 Customer questionnaires must match this schema exactly. Anything else is rejected with a clear error. Same abstention-over-fabrication instinct, applied at parse time.
