@@ -2092,7 +2092,6 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertNotIn("\x1b", _safe_display_text("\x1b[31mx"))
 
     def test_unsafe_question_ids_rejected_with_source_and_row(self) -> None:
-        """Ids with controls, bidi, or zero-width characters fail at that row."""
         import yaml as yaml_mod
 
         cases = {
@@ -2136,7 +2135,6 @@ class QuestionnaireParserTests(unittest.TestCase):
                     self.assertNotIn(qid, text)
 
     def test_colliding_escaped_ids_rejected_at_first_offending_row(self) -> None:
-        """A real U+00AD and the literal text \\xad no longer share one id."""
         import yaml as yaml_mod
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2176,7 +2174,6 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertNotIn("\u00ad", parsed.questions[0].id)
 
     def test_csv_unsafe_id_names_file_line(self) -> None:
-        """CSV row number is the file line, header included."""
         import csv as csv_mod
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -2243,7 +2240,6 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertIn("text/question", msg)
 
     def test_format_cli_error_preserves_assembled_newlines(self) -> None:
-        """The formatter does not escape a message its raise site already built."""
         raw = (
             'while scanning a quoted scalar\n'
             '  in "q.yaml", line 2, column 11\n'
@@ -2254,7 +2250,6 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertNotIn("\\x0a", msg)
 
     def test_safe_display_text_escapes_backslash_and_high_planes(self) -> None:
-        """Literal \\x00 stays distinct from NUL; noncharacters use \\U########."""
         literal = _safe_display_text("\\x00")
         nul = _safe_display_text("\x00")
         self.assertEqual(nul, "\\x00")
@@ -2268,7 +2263,6 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertIn("Zp", _UNSAFE_UNICODE_CATEGORIES)
 
     def test_unterminated_quoted_scalar_keeps_yaml_lines(self) -> None:
-        """PyYAML's mark stays on its own line, with no absolute path."""
         with tempfile.TemporaryDirectory() as tmp:
             company = Path(tmp) / "AcmeCorp"
             company.mkdir()
@@ -2291,7 +2285,6 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertNotIn("Traceback", text)
 
     def test_customer_key_esc_byte_not_on_stderr(self) -> None:
-        """A key whose value is ESC must not put that byte on stderr."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.yaml"
             _write(
@@ -2313,8 +2306,50 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertNotIn(bytes([0x1B]), result.stderr)
             self.assertIn(b"unexpected key", result.stderr)
 
+    def test_preview_escapes_question_text_and_corpus_version(self) -> None:
+        import yaml as yaml_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            questions = tmp_path / "q.yaml"
+            questions.write_text(
+                yaml_mod.safe_dump(
+                    {"questions": [{"id": "Q1", "text": "hello\u001bworld"}]},
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            corpus = tmp_path / "c.yaml"
+            corpus.write_text(
+                'metadata:\n  version: "1.0\\u001b"\n  row_count: 1\n'
+                "mappings:\n"
+                "  - soc2_cc: CC6.1\n"
+                "    iso_27001_2022: [A.5.15]\n"
+                "    confidence: Strong\n"
+                "    rationale: logical access\n"
+                "    nist_800_53: [AC-3]\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    "--corpus",
+                    str(corpus),
+                    "--questionnaire",
+                    str(questions),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertNotIn(bytes([0x1B]), result.stdout)
+            self.assertNotIn(bytes([0x1B]), result.stderr)
+            self.assertIn(b"corpus version: 1.0\\x1b", result.stdout)
+            self.assertIn(b"Q1: hello\\x1bworld", result.stdout)
+
     def test_question_identity_symbol_removed(self) -> None:
-        """Identity and display are one field; the old alias is gone."""
         needle = "display" + "_id"
         for name in ("respond.py", "test_respond.py"):
             text = (REPO_ROOT / name).read_text(encoding="utf-8")
