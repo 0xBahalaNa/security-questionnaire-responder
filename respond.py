@@ -454,8 +454,8 @@ _NIST_CITATION_RE = re.compile(
 CSV_ALLOWED_HEADERS = frozenset({"id", "text"})
 QUESTION_ALLOWED_KEYS = frozenset({"id", "text"})
 
-# Unicode categories that must not reach a terminal (C0/C1, bidi, zero-width).
-_UNSAFE_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn"})
+# C0/C1, bidi, zero-width, line separators, paragraph separators.
+_UNSAFE_UNICODE_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 
 
 @dataclass(frozen=True)
@@ -471,9 +471,12 @@ class InputPath:
 
 
 def _safe_display_text(text: str) -> str:
-    """Escape controls/bidi/zero-width; leave printable non-ASCII intact."""
+    """Escape unsafe characters and literal backslashes; leave printable non-ASCII."""
     parts: list[str] = []
     for ch in text:
+        if ch == "\\":
+            parts.append("\\\\")
+            continue
         if ch == "\t":
             parts.append(ch)
             continue
@@ -482,11 +485,24 @@ def _safe_display_text(text: str) -> str:
             code = ord(ch)
             if code <= 0xFF:
                 parts.append(f"\\x{code:02x}")
-            else:
+            elif code <= 0xFFFF:
                 parts.append(f"\\u{code:04x}")
+            else:
+                parts.append(f"\\U{code:08x}")
         else:
             parts.append(ch)
     return "".join(parts)
+
+
+def _show_untrusted(value: object) -> str:
+    if isinstance(value, str):
+        shown = _safe_display_text(value)
+        return "'" + shown.replace("'", "\\'") + "'"
+    return repr(value)
+
+
+def _show_untrusted_list(values: list) -> str:
+    return "[" + ", ".join(_show_untrusted(value) for value in values) + "]"
 
 
 def input_path(raw: str) -> InputPath:
@@ -566,12 +582,12 @@ def _yaml_load(text: str, *, source: str, loader: type[yaml.SafeLoader]) -> Any:
 
 
 def _format_cli_error(exc: BaseException, *, include_type: bool = False) -> str:
-    """Format an exception for stderr. Paths must already be display forms in ``exc``."""
+    """Format an exception for stderr. Paths in ``exc`` are already display forms."""
     if include_type:
         text = f"{type(exc).__name__}: {exc}"
     else:
         text = str(exc) if str(exc) else type(exc).__name__
-    return _safe_display_text(text)
+    return text
 
 
 def _yaml_line(node: yaml.Node) -> int:
@@ -599,7 +615,8 @@ def _reject_merge_and_duplicates(
             continue
         if key in seen:
             raise ValueError(
-                f"{source}: line {_yaml_line(key_node)}: duplicate key {key!r}"
+                f"{source}: line {_yaml_line(key_node)}: "
+                f"duplicate key {_show_untrusted(key)}"
             )
         seen.add(key)
 
@@ -753,12 +770,6 @@ class Question:
     id: str
     text: str
     issues: tuple[str, ...] = ()
-
-    @property
-    def display_id(self) -> str:
-        """Terminal-safe id; stored ``id`` stays the customer's verbatim value."""
-        return _safe_display_text(self.id)
-
 
 @dataclass(frozen=True)
 class RetrievalHit:
@@ -933,9 +944,9 @@ def _md_prose(text: str) -> str:
     if not text:
         return "(blank)"
     flat = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", " ")
-    escaped = (
-        flat.replace("\\", "\\\\")
-        .replace("*", "\\*")
+    safe = _safe_display_text(flat)
+    return (
+        safe.replace("*", "\\*")
         .replace("_", "\\_")
         .replace("#", "\\#")
         .replace("`", "\\`")
@@ -944,7 +955,6 @@ def _md_prose(text: str) -> str:
         .replace(">", "&gt;")
         .replace("|", "\\|")
     )
-    return _safe_display_text(escaped)
 
 
 def _row_label(row: MappingRow) -> str:
@@ -1272,7 +1282,7 @@ def check_questionnaire_schema(data: object, *, source: str) -> list[dict[str, A
     unknown_root = _stable_sort_keys(set(data) - {"questions"})
     if unknown_root:
         raise ValueError(
-            f"{source}: unexpected root key(s) {unknown_root}; "
+            f"{source}: unexpected root key(s) {_show_untrusted_list(unknown_root)}; "
             "only 'questions' is allowed"
         )
 
@@ -1295,7 +1305,8 @@ def check_questionnaire_schema(data: object, *, source: str) -> list[dict[str, A
             unknown = _stable_sort_keys(set(item) - QUESTION_ALLOWED_KEYS)
             if unknown:
                 raise ValueError(
-                    f"{source}: question {index + 1}: unexpected key(s) {unknown}; "
+                    f"{source}: question {index + 1}: unexpected key(s) "
+                    f"{_show_untrusted_list(unknown)}; "
                     "only 'id' and 'text' are allowed"
                 )
             if "text" not in item:
@@ -1335,20 +1346,33 @@ def _question_from_fields(
     raw_id: str | None,
     raw_text: str | None,
     index: int,
+    *,
+    source: str,
 ) -> Question:
     """Build a Question; blank text and substituted IDs are flags, not hard errors.
 
     ``index`` is the 0-based list position for YAML, or ``line_no - 1`` for CSV
     so ``_auto_N`` matches the 1-indexed file line (including the header).
-    Customer ids are stored verbatim; use ``Question.display_id`` at print sites.
+    A non-printable customer id raises ValueError naming ``source`` and the row.
     """
     issues: list[str] = []
 
-    if raw_id is None or not raw_id.strip():
+    if raw_id is None:
         qid = f"_auto_{index + 1}"
         issues.append("substituted question id")
     else:
-        qid = raw_id.strip()
+        row = index + 1
+        for ch in raw_id:
+            if unicodedata.category(ch) in _UNSAFE_UNICODE_CATEGORIES:
+                raise ValueError(
+                    f"{source}: row {row}: "
+                    "question id contains a non-printable character"
+                )
+        if not raw_id.strip():
+            qid = f"_auto_{index + 1}"
+            issues.append("substituted question id")
+        else:
+            qid = raw_id.strip()
 
     if raw_text is None or not raw_text.strip():
         text = ""
@@ -1366,7 +1390,9 @@ def _parse_questionnaire_yaml(ip: InputPath) -> list[Question]:
 
     items = check_questionnaire_schema(raw, source=source)
     return [
-        _question_from_fields(item.get("id"), item.get("text"), index)
+        _question_from_fields(
+            item.get("id"), item.get("text"), index, source=source
+        )
         for index, item in enumerate(items)
     ]
 
@@ -1386,7 +1412,9 @@ def _parse_questionnaire_csv(ip: InputPath) -> list[Question]:
             rows = list(reader)
         except csv.Error as exc:
             # csv.Error is raised mid-iteration, outside the open() wrapper above.
-            raise ValueError(f"{source}: line {reader.line_num}: {exc}") from None
+            raise ValueError(
+                f"{source}: line {reader.line_num}: {_safe_display_text(str(exc))}"
+            ) from None
         except UnicodeDecodeError as exc:
             raise ValueError(
                 f"{source}: line {reader.line_num}: not valid utf-8: "
@@ -1412,12 +1440,16 @@ def _parse_questionnaire_csv(ip: InputPath) -> list[Question]:
 
     headers = [name.strip() for name in header]
     if len(headers) != len(set(headers)):
-        raise ValueError(f"{source}: line 1: duplicate CSV header(s) in {headers}")
+        raise ValueError(
+            f"{source}: line 1: duplicate CSV header(s) in "
+            f"{_show_untrusted_list(headers)}"
+        )
 
     unknown = sorted(set(headers) - CSV_ALLOWED_HEADERS)
     if unknown:
         raise ValueError(
-            f"{source}: line 1: unexpected CSV header(s) {unknown}; "
+            f"{source}: line 1: unexpected CSV header(s) "
+            f"{_show_untrusted_list(unknown)}; "
             "only 'id' and 'text' are allowed"
         )
     if "text" not in headers:
@@ -1442,7 +1474,9 @@ def _parse_questionnaire_csv(ip: InputPath) -> list[Question]:
         raw_id = row[id_index] if id_index is not None else None
         raw_text = row[text_index]
         # index = line_no - 1 so _auto_N matches the CSV line number (D1 / S1).
-        questions.append(_question_from_fields(raw_id, raw_text, line_no - 1))
+        questions.append(
+            _question_from_fields(raw_id, raw_text, line_no - 1, source=source)
+        )
 
     if not questions:
         raise ValueError(f"{source}: CSV contains no question rows")
@@ -1488,7 +1522,7 @@ def parse_questionnaire(path: InputPath | Path | str) -> Questionnaire:
             # _emit_stderr, not print: a dead stderr pipe (2>&1 | head) would
             # raise BrokenPipeError here, inside main()'s try, and land on the
             # return-0 backstop — exit 0 on a run that never wrote its drafts.
-            _emit_stderr(f"warning: {source}: {question.display_id}: {issue}")
+            _emit_stderr(f"warning: {source}: {question.id}: {issue}")
 
     return Questionnaire(questions=questions, path=ip)
 
@@ -1606,7 +1640,7 @@ def main(argv: list[str] | None = None) -> int:
         questionnaire = parse_questionnaire(args.questionnaire)
 
         _emit_stdout(f"corpus: {corpus.path.display}")
-        _emit_stdout(f"corpus version: {corpus.version}")
+        _emit_stdout(f"corpus version: {_safe_display_text(corpus.version)}")
         _emit_stdout(f"mapping rows: {len(corpus.mappings)}")
         _emit_stdout(f"questionnaire: {questionnaire.path.display}")
         _emit_stdout(f"questions: {len(questionnaire.questions)}")
@@ -1617,7 +1651,7 @@ def main(argv: list[str] | None = None) -> int:
             preview = (
                 _safe_display_text(question.text) if question.text else "(blank)"
             )
-            _emit_stdout(f"  {question.display_id}: {preview}")
+            _emit_stdout(f"  {question.id}: {preview}")
             record = build_record(question, corpus)
             records.append(record)
             if record["status"] == "answered":
@@ -1656,12 +1690,12 @@ def main(argv: list[str] | None = None) -> int:
         for record in records:
             if record["status"] != "INSUFFICIENT_COVERAGE":
                 continue
-            qid = _safe_display_text(record["question_id"])
+            qid = record["question_id"]
             reason = _safe_display_text(record["reason"])
             _emit_stdout(f"  abstain {qid}: {reason}")
         for name in ("responses.md", "responses.json"):
             shown = f"{out_ip.display.rstrip('/')}/{name}"
-            _emit_stdout(f"wrote: {_safe_display_text(shown)}")
+            _emit_stdout(f"wrote: {shown}")
 
         if sys.stdout is not None:
             try:

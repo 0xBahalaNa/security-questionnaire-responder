@@ -8,7 +8,6 @@ import signal
 import subprocess
 import sys
 import tempfile
-import unicodedata
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -2092,37 +2091,103 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertEqual(_safe_display_text("テスト"), "テスト")
         self.assertNotIn("\x1b", _safe_display_text("\x1b[31mx"))
 
-    def test_question_id_display_sanitized_identity_verbatim(self) -> None:
-        """B6: raw ESC stays in Question.id; display_id / stdout never emit it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / "q.csv"
-            path.write_bytes(b"id,text\n\x1b[2J\x1b[1;1HFAKE-ADMIN,Hello\n")
-            parsed = parse_questionnaire(path)
-            self.assertTrue(parsed.questions[0].id.startswith("\x1b"))
-            self.assertNotIn("\x1b", parsed.questions[0].display_id)
-            out = io.StringIO()
-            err = io.StringIO()
-            old_out, old_err = sys.stdout, sys.stderr
-            try:
-                sys.stdout, sys.stderr = out, err
-                code = main(["--questionnaire", str(path)])
-            finally:
-                sys.stdout, sys.stderr = old_out, old_err
-            self.assertEqual(code, 0)
-            combined = out.getvalue() + err.getvalue()
-            self.assertNotIn("\x1b", combined)
-            self.assertIn("FAKE-ADMIN", combined)
+    def test_unsafe_question_ids_rejected_with_source_and_row(self) -> None:
+        import yaml as yaml_mod
 
-    def test_question_id_soft_hyphen_stored_verbatim(self) -> None:
-        """B6: U+00AD must remain in stored id so audit joins match the source row."""
+        cases = {
+            "soft-hyphen": "CAIQ\u00ad-01",
+            "zero-width": "CAIQ\u200b-01",
+            "bidi": "CAIQ\u202e-01",
+            "esc": "CAIQ\u001b-01",
+            "line-sep": "CAIQ\u2028-01",
+            "para-sep": "CAIQ\u2029-01",
+        }
+        for name, qid in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "q.yaml"
+                    path.write_text(
+                        yaml_mod.safe_dump(
+                            {"questions": [{"id": qid, "text": "Hello"}]},
+                            allow_unicode=True,
+                        ),
+                        encoding="utf-8",
+                    )
+                    with self.assertRaises(ValueError) as ctx:
+                        parse_questionnaire(path)
+                    msg = str(ctx.exception)
+                    self.assertIn("q.yaml", msg)
+                    self.assertIn("row 1", msg)
+                    self.assertNotIn(qid, msg)
+                    err = io.StringIO()
+                    old_err = sys.stderr
+                    try:
+                        sys.stderr = err
+                        code = main(["--questionnaire", str(path)])
+                    finally:
+                        sys.stderr = old_err
+                    text = err.getvalue()
+                    self.assertEqual(code, 1)
+                    self.assertIn("error:", text)
+                    self.assertIn("q.yaml", text)
+                    self.assertIn("row 1", text)
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn(qid, text)
+
+    def test_colliding_escaped_ids_rejected_at_first_offending_row(self) -> None:
+        import yaml as yaml_mod
+
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.yaml"
+            literal = "CAIQ\\xad-01"
             soft = "CAIQ\u00ad-01"
-            _write(path, f'questions:\n  - id: "{soft}"\n    text: Hello\n')
-            q = parse_questionnaire(path)
-            self.assertEqual(q.questions[0].id, soft)
-            self.assertIn("\\xad", q.questions[0].display_id)
-            self.assertNotIn("\u00ad", q.questions[0].display_id)
+            path.write_text(
+                yaml_mod.safe_dump(
+                    {
+                        "questions": [
+                            {"id": literal, "text": "a"},
+                            {"id": soft, "text": "b"},
+                        ]
+                    },
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaises(ValueError) as ctx:
+                parse_questionnaire(path)
+            msg = str(ctx.exception)
+            self.assertIn("q.yaml", msg)
+            self.assertIn("row 2", msg)
+            self.assertNotIn("row 1", msg)
+            self.assertNotIn(soft, msg)
+
+            alone = Path(tmp) / "ok.yaml"
+            alone.write_text(
+                yaml_mod.safe_dump(
+                    {"questions": [{"id": literal, "text": "a"}]},
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            parsed = parse_questionnaire(alone)
+            self.assertEqual(parsed.questions[0].id, literal)
+            self.assertNotIn("\u00ad", parsed.questions[0].id)
+
+    def test_csv_unsafe_id_names_file_line(self) -> None:
+        import csv as csv_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.csv"
+            with path.open("w", encoding="utf-8", newline="") as handle:
+                writer = csv_mod.writer(handle)
+                writer.writerow(["id", "text"])
+                writer.writerow(["OK-1", "a"])
+                writer.writerow(["BAD\u200b", "b"])
+            with self.assertRaises(ValueError) as ctx:
+                parse_questionnaire(path)
+            msg = str(ctx.exception)
+            self.assertIn("q.csv", msg)
+            self.assertIn("row 3", msg)
 
     def test_main_success_stdout_has_no_home_path(self) -> None:
         out = io.StringIO()
@@ -2174,19 +2239,121 @@ class QuestionnaireParserTests(unittest.TestCase):
         self.assertIn("Strong/Partial", msg)
         self.assertIn("text/question", msg)
 
-    def test_format_cli_error_escapes_unsafe_unicode(self) -> None:
-        """No Cc/Cf/Cs/Co/Cn char reaches the formatted error text."""
-        raw = "bad id \x1b[31mFAKE\x1b[0m and soft\u00adhyphen and bidi \u202e"
+    def test_format_cli_error_preserves_assembled_newlines(self) -> None:
+        raw = (
+            'while scanning a quoted scalar\n'
+            '  in "q.yaml", line 2, column 11\n'
+            "found unexpected end of stream"
+        )
         msg = _format_cli_error(ValueError(raw))
-        for ch in msg:
-            self.assertNotIn(
-                unicodedata.category(ch),
-                _UNSAFE_UNICODE_CATEGORIES,
-                msg=f"unsafe {ch!r} survived in {msg!r}",
+        self.assertEqual(msg, raw)
+        self.assertNotIn("\\x0a", msg)
+
+    def test_safe_display_text_escapes_backslash_and_high_planes(self) -> None:
+        literal = _safe_display_text("\\x00")
+        nul = _safe_display_text("\x00")
+        self.assertEqual(nul, "\\x00")
+        self.assertEqual(literal, "\\\\x00")
+        self.assertNotEqual(literal, nul)
+        self.assertEqual(_safe_display_text(chr(0xF0000)), "\\U000f0000")
+        self.assertEqual(_safe_display_text("\U0001FFFE"), "\\U0001fffe")
+        self.assertNotIn("\u2028", _safe_display_text("a\u2028b"))
+        self.assertNotIn("\u2029", _safe_display_text("a\u2029b"))
+        self.assertIn("Zl", _UNSAFE_UNICODE_CATEGORIES)
+        self.assertIn("Zp", _UNSAFE_UNICODE_CATEGORIES)
+
+    def test_unterminated_quoted_scalar_keeps_yaml_lines(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            company = Path(tmp) / "AcmeCorp"
+            company.mkdir()
+            path = company / "q.yaml"
+            _write(path, 'questions:\n  - id: Q1\n    text: "unterminated\n')
+            err = io.StringIO()
+            old_err = sys.stderr
+            try:
+                sys.stderr = err
+                code = main(["--questionnaire", str(path)])
+            finally:
+                sys.stderr = old_err
+            text = err.getvalue()
+            self.assertEqual(code, 1)
+            self.assertIn("error:", text)
+            self.assertIn('\n  in "q.yaml", line 3, column 11\n', text)
+            self.assertNotIn("\\x0a", text)
+            self.assertNotIn("AcmeCorp", text)
+            self.assertNotIn(str(path.resolve()), text)
+            self.assertNotIn("Traceback", text)
+
+    def test_customer_key_esc_byte_not_on_stderr(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.yaml"
+            _write(
+                path,
+                'questions:\n  - id: Q1\n    text: hi\n    "\\u001b": evil\n',
             )
-        self.assertIn("FAKE", msg)
-        self.assertIn("\\x1b", msg)
-        self.assertIn("\\xad", msg)
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    "--questionnaire",
+                    str(path),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertNotIn(bytes([0x1B]), result.stderr)
+            self.assertIn(b"unexpected key", result.stderr)
+
+    def test_preview_escapes_question_text_and_corpus_version(self) -> None:
+        import yaml as yaml_mod
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            questions = tmp_path / "q.yaml"
+            questions.write_text(
+                yaml_mod.safe_dump(
+                    {"questions": [{"id": "Q1", "text": "hello\u001bworld"}]},
+                    allow_unicode=True,
+                ),
+                encoding="utf-8",
+            )
+            corpus = tmp_path / "c.yaml"
+            corpus.write_text(
+                'metadata:\n  version: "1.0\\u001b"\n  row_count: 1\n'
+                "mappings:\n"
+                "  - soc2_cc: CC6.1\n"
+                "    iso_27001_2022: [A.5.15]\n"
+                "    confidence: Strong\n"
+                "    rationale: logical access\n"
+                "    nist_800_53: [AC-3]\n",
+                encoding="utf-8",
+            )
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    "--corpus",
+                    str(corpus),
+                    "--questionnaire",
+                    str(questions),
+                ],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, msg=result.stderr)
+            self.assertNotIn(bytes([0x1B]), result.stdout)
+            self.assertNotIn(bytes([0x1B]), result.stderr)
+            self.assertIn(b"corpus version: 1.0\\x1b", result.stdout)
+            self.assertIn(b"Q1: hello\\x1bworld", result.stdout)
+
+    def test_question_identity_symbol_removed(self) -> None:
+        needle = "display" + "_id"
+        for name in ("respond.py", "test_respond.py"):
+            text = (REPO_ROOT / name).read_text(encoding="utf-8")
+            self.assertNotIn(needle, text)
 
     def test_m1_missing_file_under_company_dir_no_leak(self) -> None:
         """AC1: missing file under AcmeCorp prints neither AcmeCorp nor abs path."""
