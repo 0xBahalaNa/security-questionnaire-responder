@@ -2189,6 +2189,90 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertIn("q.csv", msg)
             self.assertIn("row 3", msg)
 
+    def test_csv_trailing_tab_id_runs_as_stripped_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / "q.csv"
+            out = tmp_path / "out"
+            path.write_text(
+                'id,text\n"Q1\t",How do you manage access?\n',
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            out_buf = io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = out_buf, err
+                code = main(
+                    ["--questionnaire", str(path), "--out-dir", str(out)]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0, msg=err.getvalue())
+            self.assertNotIn("non-printable", err.getvalue())
+            text = out_buf.getvalue()
+            self.assertIn("\n  Q1:", text)
+            self.assertIn("abstain Q1:", text)
+            self.assertEqual(parse_questionnaire(path).questions[0].id, "Q1")
+
+    def test_yaml_block_scalar_id_runs_as_stripped_id(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / "q.yaml"
+            out = tmp_path / "out"
+            _write(
+                path,
+                "questions:\n"
+                "  - id: |\n"
+                "      Q1\n"
+                "    text: How do you manage access?\n",
+            )
+            err = io.StringIO()
+            out_buf = io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = out_buf, err
+                code = main(
+                    ["--questionnaire", str(path), "--out-dir", str(out)]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0, msg=err.getvalue())
+            self.assertNotIn("non-printable", err.getvalue())
+            text = out_buf.getvalue()
+            self.assertIn("\n  Q1:", text)
+            self.assertIn("abstain Q1:", text)
+            self.assertEqual(parse_questionnaire(path).questions[0].id, "Q1")
+
+    def test_whitespace_only_id_falls_back_to_auto(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            path = tmp_path / "q.yaml"
+            out = tmp_path / "out"
+            _write(
+                path,
+                'questions:\n  - id: "\\t"\n    text: How do you manage access?\n',
+            )
+            err = io.StringIO()
+            out_buf = io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = out_buf, err
+                code = main(
+                    ["--questionnaire", str(path), "--out-dir", str(out)]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0, msg=err.getvalue())
+            self.assertIn("substituted question id", err.getvalue())
+            self.assertIn("_auto_1", err.getvalue())
+            text = out_buf.getvalue()
+            self.assertIn("\n  _auto_1:", text)
+            self.assertIn("abstain _auto_1:", text)
+            question = parse_questionnaire(path).questions[0]
+            self.assertEqual(question.id, "_auto_1")
+            self.assertIn("substituted question id", question.issues)
+
     def test_main_success_stdout_has_no_home_path(self) -> None:
         out = io.StringIO()
         err = io.StringIO()
@@ -2248,6 +2332,22 @@ class QuestionnaireParserTests(unittest.TestCase):
         msg = _format_cli_error(ValueError(raw))
         self.assertEqual(msg, raw)
         self.assertNotIn("\\x0a", msg)
+
+    def test_format_cli_error_escapes_unsafe_unicode(self) -> None:
+        import unicodedata
+
+        raw = "bad id \x1b[31mFAKE\x1b[0m and soft\u00adhyphen and bidi \u202e"
+        msg = _format_cli_error(ValueError(raw))
+        for ch in msg:
+            self.assertNotIn(
+                unicodedata.category(ch),
+                _UNSAFE_UNICODE_CATEGORIES,
+                msg=f"unsafe {ch!r} survived in {msg!r}",
+            )
+        self.assertIn("FAKE", msg)
+        self.assertIn("\\x1b", msg)
+        self.assertIn("\\xad", msg)
+        self.assertIn("\\u202e", msg)
 
     def test_safe_display_text_escapes_backslash_and_high_planes(self) -> None:
         literal = _safe_display_text("\\x00")
@@ -2348,6 +2448,53 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertNotIn(bytes([0x1B]), result.stderr)
             self.assertIn(b"corpus version: 1.0\\x1b", result.stdout)
             self.assertIn(b"Q1: hello\\x1bworld", result.stdout)
+
+    def test_responses_md_escapes_corpus_version_esc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            questions = tmp_path / "q.yaml"
+            corpus = tmp_path / "c.yaml"
+            out = tmp_path / "out"
+            _write(
+                questions,
+                "questions:\n"
+                "  - id: Q1\n"
+                "    text: logical access authentication privilege\n",
+            )
+            corpus.write_text(
+                'metadata:\n  version: "1.0\\u001b"\n  row_count: 1\n'
+                "mappings:\n"
+                "  - soc2_cc: CC6.1\n"
+                "    iso_27001_2022: [A.5.15]\n"
+                "    confidence: Strong\n"
+                '    rationale: "logical access authentication\\n'
+                'privilege \\u001b boundary"\n'
+                "    nist_800_53: [AC-3]\n",
+                encoding="utf-8",
+            )
+            err = io.StringIO()
+            out_buf = io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = out_buf, err
+                code = main(
+                    [
+                        "--corpus",
+                        str(corpus),
+                        "--questionnaire",
+                        str(questions),
+                        "--out-dir",
+                        str(out),
+                    ]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0, msg=err.getvalue())
+            md = (out / "responses.md").read_bytes()
+            self.assertNotIn(bytes([0x1B]), md)
+            self.assertIn(b"version 1.0\\x1b", md)
+            self.assertIn(b"privilege \\x1b boundary", md)
+            self.assertIn(b"logical access authentication\n", md)
 
     def test_question_identity_symbol_removed(self) -> None:
         needle = "display" + "_id"
