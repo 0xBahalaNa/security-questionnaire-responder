@@ -587,7 +587,9 @@ def _format_cli_error(exc: BaseException, *, include_type: bool = False) -> str:
         text = f"{type(exc).__name__}: {exc}"
     else:
         text = str(exc) if str(exc) else type(exc).__name__
-    return text
+    # Line by line, same as _SanitizingParser._print_message: a YAML mark's
+    # newline stays a newline, and ESC / bidi on that line still get escaped.
+    return "\n".join(_safe_display_text(line) for line in text.split("\n"))
 
 
 def _yaml_line(node: yaml.Node) -> int:
@@ -1111,7 +1113,7 @@ def render_markdown(records: list[dict], corpus: Corpus) -> str:
     lines = [
         "# Questionnaire responses",
         "",
-        f"Corpus: {corpus.path.display} (version {corpus.version})",
+        f"Corpus: {corpus.path.display} (version {_safe_display_text(corpus.version)})",
         f"Coverage: {answered}/{total} ({pct}%)",
         "",
     ]
@@ -1133,10 +1135,15 @@ def render_markdown(records: list[dict], corpus: Corpus) -> str:
             lines.append("")
             lines.append(f"**Confidence:** {record['confidence']}")
             lines.append("")
-            lines.append(f"**Rationale:** {record['rationale']}")
+            # Newlines in a corpus rationale are the paragraph. Escape each
+            # line the way stdout escapes a one-line field.
+            rationale = "\n".join(
+                _safe_display_text(line) for line in record["rationale"].split("\n")
+            )
+            lines.append(f"**Rationale:** {rationale}")
             lines.append("")
             lines.append(
-                f"**Source:** {corpus.path.display} version {corpus.version}"
+                f"**Source:** {corpus.path.display} version {_safe_display_text(corpus.version)}"
             )
         else:
             lines.append("**Status:** INSUFFICIENT_COVERAGE")
@@ -1361,18 +1368,19 @@ def _question_from_fields(
         qid = f"_auto_{index + 1}"
         issues.append("substituted question id")
     else:
-        row = index + 1
-        for ch in raw_id:
-            if unicodedata.category(ch) in _UNSAFE_UNICODE_CATEGORIES:
-                raise ValueError(
-                    f"{source}: row {row}: "
-                    "question id contains a non-printable character"
-                )
-        if not raw_id.strip():
+        stripped = raw_id.strip()
+        if not stripped:
             qid = f"_auto_{index + 1}"
             issues.append("substituted question id")
         else:
-            qid = raw_id.strip()
+            row = index + 1
+            for ch in stripped:
+                if unicodedata.category(ch) in _UNSAFE_UNICODE_CATEGORIES:
+                    raise ValueError(
+                        f"{source}: row {row}: "
+                        "question id contains a non-printable character"
+                    )
+            qid = stripped
 
     if raw_text is None or not raw_text.strip():
         text = ""
