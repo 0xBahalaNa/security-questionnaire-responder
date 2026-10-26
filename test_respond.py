@@ -1997,6 +1997,23 @@ class QuestionnaireParserTests(unittest.TestCase):
                 parse_questionnaire(path)
             self.assertIn("expected 2 field(s), got 1", str(ctx.exception))
 
+    def test_csv_empty_and_header_only_are_named_errors(self) -> None:
+        cases = {
+            "empty": ("", "CSV is empty"),
+            "blank-line": ("\n", "line 1: CSV has no header row"),
+            "header-only": ("id,text\n", "CSV contains no question rows"),
+        }
+        for name, (body, needle) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "q.csv"
+                    _write(path, body)
+                    with self.assertRaises(ValueError) as ctx:
+                        parse_questionnaire(path)
+                    message = str(ctx.exception)
+                    self.assertIn("q.csv", message)
+                    self.assertIn(needle, message)
+
     def test_csv_requires_text_column(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.csv"
@@ -2008,7 +2025,6 @@ class QuestionnaireParserTests(unittest.TestCase):
             )
 
     def test_csv_quoted_newline_auto_id_uses_file_line(self) -> None:
-        """A quoted newline is a file line, so ids follow the reader's line."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.csv"
             _write(path, 'text\n"hello\nworld"\nlater\n')
