@@ -233,7 +233,7 @@ Rules:
 - Headers are exactly `id` and/or `text` (`text` required). No other columns.
 - UTF-8 with optional BOM (Excel)
 - Rectangular rows; blank or duplicate headers error; row numbers are 1-indexed including the header line
-- Missing `id` → synthesized `_auto_N` where **N is the CSV line number** (header is line 1), then flagged, so `_auto_2` is the first data row. This deliberately differs from YAML list-position numbering: CSV ids point operators at the file line they must edit. These ids become the join key in the JSON audit record.
+- Missing `id` → synthesized `_auto_N` where **N is the file line the row ends on** (header is line 1, and a quoted field that contains a newline counts every physical line), then flagged. A row that ends on file line 4 is `_auto_4`. This deliberately differs from YAML list-position numbering: CSV ids point operators at the file line they must edit. These ids become the join key in the JSON audit record.
 
 ## Repository Structure
 
