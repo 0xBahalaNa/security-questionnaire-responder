@@ -1417,9 +1417,67 @@ def _parse_questionnaire_csv(ip: InputPath) -> list[Question]:
     with handle:
         reader = csv.reader(handle)
         try:
-            rows = list(reader)
+            header = next(reader, None)
+            if header is None:
+                raise ValueError(f"{source}: CSV is empty")
+
+            header_line = reader.line_num
+            if not header:
+                raise ValueError(
+                    f"{source}: line {header_line}: CSV has no header row"
+                )
+
+            for col_index, name in enumerate(header):
+                if name is None or not str(name).strip():
+                    raise ValueError(
+                        f"{source}: line {header_line}: blank header in column {col_index + 1}"
+                    )
+
+            headers = [name.strip() for name in header]
+            if len(headers) != len(set(headers)):
+                raise ValueError(
+                    f"{source}: line {header_line}: duplicate CSV header(s) in "
+                    f"{_show_untrusted_list(headers)}"
+                )
+
+            unknown = sorted(set(headers) - CSV_ALLOWED_HEADERS)
+            if unknown:
+                raise ValueError(
+                    f"{source}: line {header_line}: unexpected CSV header(s) "
+                    f"{_show_untrusted_list(unknown)}; "
+                    "only 'id' and 'text' are allowed"
+                )
+            if "text" not in headers:
+                raise ValueError(
+                    f"{source}: line {header_line}: CSV must include a 'text' column"
+                )
+
+            width = len(headers)
+            id_index = headers.index("id") if "id" in headers else None
+            text_index = headers.index("text")
+
+            questions: list[Question] = []
+            for row in reader:
+                line_no = reader.line_num
+                # Skip only genuine empty lines (Excel trailing \\n → len(row)==0).
+                # Whitespace-bearing rows are kept and flagged — never silently dropped.
+                if len(row) == 0:
+                    continue
+                if len(row) != width:
+                    raise ValueError(
+                        f"{source}: line {line_no}: expected {width} field(s), got {len(row)}"
+                    )
+                raw_id = row[id_index] if id_index is not None else None
+                raw_text = row[text_index]
+                # index = line_no - 1 so _auto_N matches the CSV line number (D1 / S1).
+                questions.append(
+                    _question_from_fields(raw_id, raw_text, line_no - 1, source=source)
+                )
+
+            if not questions:
+                raise ValueError(f"{source}: CSV contains no question rows")
+            return questions
         except csv.Error as exc:
-            # csv.Error is raised mid-iteration, outside the open() wrapper above.
             raise ValueError(
                 f"{source}: line {reader.line_num}: {_safe_display_text(str(exc))}"
             ) from None
@@ -1431,65 +1489,6 @@ def _parse_questionnaire_csv(ip: InputPath) -> list[Question]:
         except OSError as exc:
             detail = exc.strerror or type(exc).__name__
             raise OSError(exc.errno, f"cannot read {source}: {detail}") from None
-
-    if not rows:
-        raise ValueError(f"{source}: CSV is empty")
-
-    # Row numbers are 1-indexed including the header line.
-    header = rows[0]
-    if not header:
-        raise ValueError(f"{source}: line 1: CSV has no header row")
-
-    for col_index, name in enumerate(header):
-        if name is None or not str(name).strip():
-            raise ValueError(
-                f"{source}: line 1: blank header in column {col_index + 1}"
-            )
-
-    headers = [name.strip() for name in header]
-    if len(headers) != len(set(headers)):
-        raise ValueError(
-            f"{source}: line 1: duplicate CSV header(s) in "
-            f"{_show_untrusted_list(headers)}"
-        )
-
-    unknown = sorted(set(headers) - CSV_ALLOWED_HEADERS)
-    if unknown:
-        raise ValueError(
-            f"{source}: line 1: unexpected CSV header(s) "
-            f"{_show_untrusted_list(unknown)}; "
-            "only 'id' and 'text' are allowed"
-        )
-    if "text" not in headers:
-        raise ValueError(f"{source}: line 1: CSV must include a 'text' column")
-
-    width = len(headers)
-    id_index = headers.index("id") if "id" in headers else None
-    text_index = headers.index("text")
-
-    data_rows = rows[1:]
-    questions: list[Question] = []
-    for offset, row in enumerate(data_rows):
-        line_no = offset + 2  # 1-indexed, including header
-        # Skip only genuine empty lines (Excel trailing \\n → len(row)==0).
-        # Whitespace-bearing rows are kept and flagged — never silently dropped.
-        if len(row) == 0:
-            continue
-        if len(row) != width:
-            raise ValueError(
-                f"{source}: line {line_no}: expected {width} field(s), got {len(row)}"
-            )
-        raw_id = row[id_index] if id_index is not None else None
-        raw_text = row[text_index]
-        # index = line_no - 1 so _auto_N matches the CSV line number (D1 / S1).
-        questions.append(
-            _question_from_fields(raw_id, raw_text, line_no - 1, source=source)
-        )
-
-    if not questions:
-        raise ValueError(f"{source}: CSV contains no question rows")
-
-    return questions
 
 
 def parse_questionnaire(path: InputPath | Path | str) -> Questionnaire:

@@ -1633,7 +1633,15 @@ class CorpusLoaderTests(unittest.TestCase):
             )
             corpus = load_corpus(path)
             self.assertEqual(corpus.version, "9.9")
-            self.assertEqual(main(["--corpus", str(path), "--questionnaire", str(SAMPLE)]), 0)
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+                code = main(
+                    ["--corpus", str(path), "--questionnaire", str(SAMPLE)]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0)
 
     def test_rejects_merge_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1861,6 +1869,14 @@ class SchemaCheckTests(unittest.TestCase):
             )
         self.assertIn("'id' must be a string", str(ctx.exception))
 
+    def test_mapping_requires_text_key(self) -> None:
+        with self.assertRaises(ValueError) as ctx:
+            check_questionnaire_schema(
+                {"questions": [{"id": "Q1"}]},
+                source="t.yaml",
+            )
+        self.assertIn("missing required key 'text'", str(ctx.exception))
+
 
 class QuestionnaireParserTests(unittest.TestCase):
     def test_sample_yaml(self) -> None:
@@ -1981,6 +1997,51 @@ class QuestionnaireParserTests(unittest.TestCase):
                 parse_questionnaire(path)
             self.assertIn("expected 2 field(s), got 1", str(ctx.exception))
 
+    def test_csv_empty_and_header_only_are_named_errors(self) -> None:
+        cases = {
+            "empty": ("", "CSV is empty"),
+            "blank-line": ("\n", "line 1: CSV has no header row"),
+            "header-only": ("id,text\n", "CSV contains no question rows"),
+        }
+        for name, (body, needle) in cases.items():
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / "q.csv"
+                    _write(path, body)
+                    with self.assertRaises(ValueError) as ctx:
+                        parse_questionnaire(path)
+                    message = str(ctx.exception)
+                    self.assertIn("q.csv", message)
+                    self.assertIn(needle, message)
+
+    def test_csv_requires_text_column(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.csv"
+            _write(path, "id\nQ1\n")
+            with self.assertRaises(ValueError) as ctx:
+                parse_questionnaire(path)
+            self.assertIn(
+                "line 1: CSV must include a 'text' column", str(ctx.exception)
+            )
+
+    def test_csv_quoted_newline_auto_id_uses_file_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.csv"
+            _write(path, 'text\n"hello\nworld"\nlater\n')
+            q = parse_questionnaire(path)
+            self.assertEqual(
+                [(item.id, item.text) for item in q.questions],
+                [("_auto_3", "hello\nworld"), ("_auto_4", "later")],
+            )
+
+    def test_csv_quoted_newline_error_uses_file_line(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "q.csv"
+            _write(path, 'id,text\nQ1,"hello\nworld"\nQ2\n')
+            with self.assertRaises(ValueError) as ctx:
+                parse_questionnaire(path)
+            self.assertIn("line 4:", str(ctx.exception))
+
     def test_csv_auto_id_uses_line_number(self) -> None:
         """D1: substituted ids key off CSV line number (incl. header), not list length."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -2040,7 +2101,13 @@ class QuestionnaireParserTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "q.yaml"
             _write(path, "questions: []\n")
-            self.assertEqual(main(["--questionnaire", str(path)]), 1)
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
+                code = main(["--questionnaire", str(path)])
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 1)
 
     def test_input_path_repo_relative(self) -> None:
         shown = input_path(str(SAMPLE)).display
@@ -2068,12 +2135,12 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertEqual(shown, "<directory>")
             self.assertNotIn("AcmeCorp", shown)
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(company)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             self.assertEqual(code, 1)
             self.assertIn("<directory>", err.getvalue())
             self.assertNotIn("AcmeCorp", err.getvalue())
@@ -2120,12 +2187,12 @@ class QuestionnaireParserTests(unittest.TestCase):
                     self.assertIn("row 1", msg)
                     self.assertNotIn(qid, msg)
                     err = io.StringIO()
-                    old_err = sys.stderr
+                    old_out, old_err = sys.stdout, sys.stderr
                     try:
-                        sys.stderr = err
+                        sys.stdout, sys.stderr = io.StringIO(), err
                         code = main(["--questionnaire", str(path)])
                     finally:
-                        sys.stderr = old_err
+                        sys.stdout, sys.stderr = old_out, old_err
                     text = err.getvalue()
                     self.assertEqual(code, 1)
                     self.assertIn("error:", text)
@@ -2369,12 +2436,12 @@ class QuestionnaireParserTests(unittest.TestCase):
             path = company / "q.yaml"
             _write(path, 'questions:\n  - id: Q1\n    text: "unterminated\n')
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(path)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("error:", text)
@@ -2509,12 +2576,12 @@ class QuestionnaireParserTests(unittest.TestCase):
             company.mkdir()
             missing = company / "missing.yaml"
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(missing)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("error:", text)
@@ -2534,12 +2601,12 @@ class QuestionnaireParserTests(unittest.TestCase):
             os.chmod(path, 0o000)
             try:
                 err = io.StringIO()
-                old_err = sys.stderr
+                old_out, old_err = sys.stdout, sys.stderr
                 try:
-                    sys.stderr = err
+                    sys.stdout, sys.stderr = io.StringIO(), err
                     code = main(["--questionnaire", str(path)])
                 finally:
-                    sys.stderr = old_err
+                    sys.stdout, sys.stderr = old_out, old_err
                 text = err.getvalue()
                 self.assertEqual(code, 1)
                 self.assertIn("error:", text)
@@ -2556,12 +2623,12 @@ class QuestionnaireParserTests(unittest.TestCase):
             path = Path(tmp) / os.fsdecode(raw_name)
             _write(path, "questions:\n  - [ unterminated\n")
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", os.fsdecode(os.fsencode(path))])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("error:", text)
@@ -2573,12 +2640,12 @@ class QuestionnaireParserTests(unittest.TestCase):
         for raw in ("", "."):
             with self.subTest(raw=raw):
                 err = io.StringIO()
-                old_err = sys.stderr
+                old_out, old_err = sys.stdout, sys.stderr
                 try:
-                    sys.stderr = err
+                    sys.stdout, sys.stderr = io.StringIO(), err
                     code = main(["--questionnaire", raw])
                 finally:
-                    sys.stderr = old_err
+                    sys.stdout, sys.stderr = old_out, old_err
                 text = err.getvalue()
                 self.assertEqual(code, 1)
                 self.assertIn("error:", text)
@@ -2628,12 +2695,12 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
             path = Path(tmp) / "AcmeCorp_questions.yaml"
             path.write_bytes(b"questions:\n  - text: caf\xff\xfe\n")
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(path)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("AcmeCorp_questions.yaml", text)
@@ -2647,12 +2714,12 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
             path = Path(tmp) / "big.csv"
             _write(path, 'id,text\nQ1,"' + "A" * 200000 + '"\n')
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(path)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("big.csv", text)
@@ -2670,14 +2737,14 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
                 "mappings:\n  - soc2_cc: CC6.1\n",
             )
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(
                     ["--corpus", str(bad), "--questionnaire", str(SAMPLE)]
                 )
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("altpin.yaml", text)
@@ -2714,10 +2781,10 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
         """B1 DONE: relative in-repo-shaped path is not slash-stripped."""
         rel_corpus = Path("corpus") / "nope.yaml"
         err = io.StringIO()
-        old_err, old_cwd = sys.stderr, Path.cwd()
+        old_out, old_err, old_cwd = sys.stdout, sys.stderr, Path.cwd()
         try:
             os.chdir(REPO_ROOT)
-            sys.stderr = err
+            sys.stdout, sys.stderr = io.StringIO(), err
             code = main(
                 [
                     "--corpus",
@@ -2727,7 +2794,7 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
                 ]
             )
         finally:
-            sys.stderr = old_err
+            sys.stdout, sys.stderr = old_out, old_err
             os.chdir(old_cwd)
         self.assertEqual(code, 1)
         text = err.getvalue()
@@ -2745,12 +2812,12 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
                 "questions:\n  - 1: junk\n    x: also\n    text: hello\n",
             )
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(path)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("error:", text)
@@ -2840,12 +2907,12 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
             # Deeply nested sequence — PyYAML recurses on construct.
             path.write_text("questions:\n  - " + ("[" * 3000) + ("]" * 3000) + "\n")
             err = io.StringIO()
-            old_err = sys.stderr
+            old_out, old_err = sys.stdout, sys.stderr
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(path)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
             text = err.getvalue()
             self.assertEqual(code, 1)
             self.assertIn("error:", text)
@@ -2856,7 +2923,7 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
     def test_internal_error_includes_exception_type(self) -> None:
         """B8: catch-all must keep the exception type name."""
         err = io.StringIO()
-        old_err = sys.stderr
+        old_out, old_err = sys.stdout, sys.stderr
         with mock.patch(
             "respond.load_corpus",
             side_effect=AttributeError(
@@ -2864,10 +2931,10 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
             ),
         ):
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(SAMPLE)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
         text = err.getvalue()
         self.assertEqual(code, 1)
         self.assertIn("internal error: AttributeError:", text)
@@ -3220,15 +3287,15 @@ class ExitCodeContractTests(unittest.TestCase):
 
     def test_keyboard_interrupt_in_process_exits_1(self) -> None:
         err = io.StringIO()
-        old_err = sys.stderr
+        old_out, old_err = sys.stdout, sys.stderr
         with mock.patch(
             "respond.parse_questionnaire", side_effect=KeyboardInterrupt
         ):
             try:
-                sys.stderr = err
+                sys.stdout, sys.stderr = io.StringIO(), err
                 code = main(["--questionnaire", str(SAMPLE)])
             finally:
-                sys.stderr = old_err
+                sys.stdout, sys.stderr = old_out, old_err
         text = err.getvalue()
         self.assertEqual(code, 1)
         self.assertIn("error: interrupted", text)
@@ -3308,7 +3375,7 @@ _text_st = st.text(
 
 class PropertyTests(unittest.TestCase):
     @given(st.lists(st.tuples(_id_st, _text_st), min_size=1, max_size=8, unique_by=lambda t: t[0]))
-    @settings(max_examples=40, deadline=None)
+    @settings(max_examples=40, deadline=None, derandomize=True)
     def test_yaml_round_trip_preserves_id_and_text(self, pairs: list[tuple[str, str]]) -> None:
         import yaml as yaml_mod
 
@@ -3328,7 +3395,7 @@ class PropertyTests(unittest.TestCase):
             )
 
     @given(st.lists(st.tuples(_id_st, _text_st), min_size=1, max_size=8, unique_by=lambda t: t[0]))
-    @settings(max_examples=40, deadline=None)
+    @settings(max_examples=40, deadline=None, derandomize=True)
     def test_csv_round_trip_preserves_id_and_text(self, pairs: list[tuple[str, str]]) -> None:
         import csv as csv_mod
 
@@ -3357,7 +3424,7 @@ class PropertyTests(unittest.TestCase):
             ]
         )
     )
-    @settings(max_examples=20, deadline=None)
+    @settings(max_examples=20, deadline=None, derandomize=True)
     def test_invalid_schema_never_returns_questions(self, data: object) -> None:
         with self.assertRaises(ValueError):
             check_questionnaire_schema(data, source="property.yaml")
