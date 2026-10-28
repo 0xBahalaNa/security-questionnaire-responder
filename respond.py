@@ -1540,7 +1540,11 @@ class _SanitizingParser(argparse.ArgumentParser):
             return
         if file is None:
             file = sys.stderr
-        file.write("\n".join(_safe_display_text(line) for line in message.split("\n")))
+        text = "\n".join(_safe_display_text(line) for line in message.split("\n"))
+        try:
+            file.write(text)
+        except (AttributeError, OSError):
+            pass
 
     def error(self, message: str) -> None:
         try:

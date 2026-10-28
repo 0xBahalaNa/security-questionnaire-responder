@@ -3178,6 +3178,25 @@ class ExitCodeContractTests(unittest.TestCase):
             self.assertNotIn(b"Exception ignored", stderr)
             self.assertNotIn(b"Traceback", stderr)
 
+    def test_main_help_write_error_exits_0(self) -> None:
+        class Broken:
+            def write(self, _text: str) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+        class NoWrite:
+            pass
+
+        old = sys.stdout
+        try:
+            for stdout in (Broken(), NoWrite()):
+                with self.subTest(stdout=type(stdout).__name__):
+                    sys.stdout = stdout
+                    with self.assertRaises(SystemExit) as caught:
+                        main(["--help"])
+                    self.assertEqual(caught.exception.code, 0)
+        finally:
+            sys.stdout = old
+
     def test_help_prints_usage_to_stdout(self) -> None:
         result = subprocess.run(
             [sys.executable, str(REPO_ROOT / "respond.py"), "--help"],
