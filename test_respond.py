@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import signal
 import subprocess
@@ -26,11 +27,11 @@ from respond import (
     TERM_EQUIVALENCE,
     Question,
     _UNSAFE_UNICODE_CATEGORIES,
-    _abstain_record,
     _format_cli_error,
     _safe_display_text,
     _validate_mapping_row,
     build_parser,
+    build_record,
     check_questionnaire_schema,
     cited_row_ids,
     corpus_vocabulary,
@@ -39,6 +40,7 @@ from respond import (
     main,
     normalize_token,
     parse_questionnaire,
+    render_json,
     retrieve,
     score_question_against_row,
     suggest_owner,
@@ -3450,16 +3452,21 @@ class PropertyTests(unittest.TestCase):
 
 
 class AbstainRecordTests(unittest.TestCase):
-    def test_abstain_record_iso_and_nist_are_empty_lists(self) -> None:
-        question = Question(
-            id="Q5",
-            text="What is your data residency commitment for EU customers?",
-        )
-        record = _abstain_record(question, "no grounded corpus match")
-        self.assertEqual(record["iso_27001_2022"], [])
-        self.assertIsInstance(record["iso_27001_2022"], list)
-        self.assertEqual(record["nist_800_53"], [])
-        self.assertIsInstance(record["nist_800_53"], list)
+    def test_emitted_json_iso_and_nist_are_lists(self) -> None:
+        corpus = load_corpus(CORPUS)
+        questionnaire = parse_questionnaire(SAMPLE)
+        records = [
+            build_record(question, corpus)
+            for question in questionnaire.questions
+        ]
+        emitted = json.loads(render_json(records, corpus))
+        responses = emitted["responses"]
+        statuses = {record["status"] for record in responses}
+        self.assertIn("answered", statuses)
+        self.assertIn("INSUFFICIENT_COVERAGE", statuses)
+        for record in responses:
+            self.assertIsInstance(record["iso_27001_2022"], list)
+            self.assertIsInstance(record["nist_800_53"], list)
 
 
 if __name__ == "__main__":
