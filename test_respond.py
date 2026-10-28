@@ -3112,12 +3112,6 @@ class ExitCodeContractTests(unittest.TestCase):
             self.assertNotIn(b"Traceback", stderr)
 
     def test_main_help_write_error_exits_0(self) -> None:
-        """Importers of main() must not see a help-text write error.
-
-        --help runs in parse_args, outside main()'s try. The CLI wrapper
-        hides BrokenPipeError; a direct caller only sees argparse's SystemExit.
-        """
-
         class Broken:
             def write(self, _text: str) -> None:
                 raise BrokenPipeError(32, "Broken pipe")
