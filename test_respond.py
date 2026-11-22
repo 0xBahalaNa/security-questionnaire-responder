@@ -1635,11 +1635,19 @@ class CorpusLoaderTests(unittest.TestCase):
             )
             corpus = load_corpus(path)
             self.assertEqual(corpus.version, "9.9")
+            out = Path(tmp) / "out"
             old_out, old_err = sys.stdout, sys.stderr
             try:
                 sys.stdout, sys.stderr = io.StringIO(), io.StringIO()
                 code = main(
-                    ["--corpus", str(path), "--questionnaire", str(SAMPLE)]
+                    [
+                        "--corpus",
+                        str(path),
+                        "--questionnaire",
+                        str(SAMPLE),
+                        "--out-dir",
+                        str(out),
+                    ]
                 )
             finally:
                 sys.stdout, sys.stderr = old_out, old_err
@@ -2343,17 +2351,26 @@ class QuestionnaireParserTests(unittest.TestCase):
             self.assertIn("substituted question id", question.issues)
 
     def test_main_success_stdout_has_no_home_path(self) -> None:
-        out = io.StringIO()
-        err = io.StringIO()
-        old_out, old_err = sys.stdout, sys.stderr
-        try:
-            sys.stdout, sys.stderr = out, err
-            code = main(["--questionnaire", str(SAMPLE)])
-        finally:
-            sys.stdout, sys.stderr = old_out, old_err
-        self.assertEqual(code, 0)
-        self.assertNotIn("/home/", out.getvalue())
-        self.assertNotIn("/home/", err.getvalue())
+        with tempfile.TemporaryDirectory() as tmp:
+            out_dir = Path(tmp) / "out"
+            out = io.StringIO()
+            err = io.StringIO()
+            old_out, old_err = sys.stdout, sys.stderr
+            try:
+                sys.stdout, sys.stderr = out, err
+                code = main(
+                    [
+                        "--questionnaire",
+                        str(SAMPLE),
+                        "--out-dir",
+                        str(out_dir),
+                    ]
+                )
+            finally:
+                sys.stdout, sys.stderr = old_out, old_err
+            self.assertEqual(code, 0)
+            self.assertNotIn("/home/", out.getvalue())
+            self.assertNotIn("/home/", err.getvalue())
 
     def test_main_malformed_yaml_error_scrubs_path_components(self) -> None:
         """B7: assert on path COMPONENTS under a fake company dir — not '/home/'."""
@@ -2499,6 +2516,7 @@ class QuestionnaireParserTests(unittest.TestCase):
                 "    nist_800_53: [AC-3]\n",
                 encoding="utf-8",
             )
+            out = tmp_path / "out"
             result = subprocess.run(
                 [
                     sys.executable,
@@ -2507,6 +2525,8 @@ class QuestionnaireParserTests(unittest.TestCase):
                     str(corpus),
                     "--questionnaire",
                     str(questions),
+                    "--out-dir",
+                    str(out),
                 ],
                 cwd=str(REPO_ROOT),
                 capture_output=True,
@@ -2843,19 +2863,23 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
             "PYTHONIOENCODING": "ascii",
             "PYTHONPATH": str(REPO_ROOT),
         }
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(REPO_ROOT / "respond.py"),
-                "--questionnaire",
-                str(SAMPLE),
-            ],
-            cwd=str(REPO_ROOT),
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "respond.py"),
+                    "--questionnaire",
+                    str(SAMPLE),
+                    "--out-dir",
+                    str(out),
+                ],
+                cwd=str(REPO_ROOT),
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
         combined = result.stdout + result.stderr
         self.assertEqual(result.returncode, 0, msg=combined)
         self.assertNotIn("Traceback", combined)
@@ -2882,12 +2906,15 @@ raise SystemExit(main(["--questionnaire", "q.yaml"]))
                 "PYTHONIOENCODING": "ascii",
                 "PYTHONPATH": str(REPO_ROOT),
             }
+            out = Path(tmp) / "out"
             result = subprocess.run(
                 [
                     sys.executable,
                     str(REPO_ROOT / "respond.py"),
                     "--questionnaire",
                     str(path),
+                    "--out-dir",
+                    str(out),
                 ],
                 cwd=str(REPO_ROOT),
                 env=env,
